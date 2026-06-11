@@ -136,6 +136,9 @@ ENV/
 env.bak/
 venv.bak/
 
+CLAUDE.md
+.claude
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -184,5 +187,3 @@ cython_debug/
 #notebooks/debug.ipynb
 #results
 #wandb
-
-.claude
