@@ -184,3 +184,5 @@ cython_debug/
 #notebooks/debug.ipynb
 #results
 #wandb
+
+.claude
