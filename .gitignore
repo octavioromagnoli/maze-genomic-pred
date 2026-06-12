@@ -184,6 +184,12 @@ cython_debug/
 .cursorindexingignore
 
 
-#notebooks/debug.ipynb
-#results
-#wandb
+# --- Proyecto maze-genomic-pred ---
+# Artefactos pesados / generados: no van al repo (se reproducen o van a wandb Artifacts).
+# Anclados a la raíz (con /) para NO pisar paquetes como src/data/.
+/data/
+/experiments/
+/wandb/
+/checkpoints/
+/outputs/
+/results/

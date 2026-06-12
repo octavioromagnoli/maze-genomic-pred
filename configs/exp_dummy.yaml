@@ -1,0 +1,32 @@
+# Experimento Fase 0: smoke test end-to-end con predictor por la media.
+# Los hiperparámetros se cambian ACÁ, nunca editando código.
+
+experiment:
+  name: dummy_mean_predictor
+  description: >
+    Corrida dummy para validar el harness completo (datos -> CV temporal
+    agrupada por línea -> métricas -> wandb) antes de escribir modelos reales.
+
+seed: 67  # numpy/torch/random; se loguea entero a wandb
+
+data:
+  geno_csv: data/Geno_data.csv     # GID + columnas SNP binarias
+  pheno_csv: data/Pheno_data.csv   # wide: GID, Year, <TRAIT>_<Optimal|Drought>
+  target: GY        # portada: Grain Yield. Alternativas: PH, AD
+  env: optimal      # 'optimal' / 'drought'; null = apila ambos ambientes
+
+cv:
+  scheme: temporal_grouped   # forward-chaining temporal + líneas disjuntas
+  holdout_test_year: 2020    # test final intocable, excluido de la CV
+  min_train_years: 1
+  enforce_disjoint_lines: true   # ninguna línea cruza train/val
+
+model:
+  name: mean_predictor   # clave del registry (src/models/registry.py)
+  params: {}
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline  # no requiere login; sincronizar luego con `wandb sync`
+  tags: [phase0, dummy, smoke]
