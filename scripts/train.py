@@ -18,6 +18,8 @@ import sys
 # Permite `import src...` corriendo desde cualquier cwd.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+import numpy as np
+
 from src.training.run import run_evaluation
 from src.utils.config import load_config
 from src.utils.seed import set_seed
@@ -51,6 +53,21 @@ def print_fold_table(per_fold: list[dict]) -> None:
             v = f.get(c, "")
             row.append(f"{v:>10.4f}" if isinstance(v, float) else f"{str(v):>10}")
         print("  " + "  ".join(row))
+
+
+def print_ci(per_fold: list[dict]) -> None:
+    """Muestra los IC por bootstrap si las métricas los traen (claves _lo/_hi)."""
+    metrics = ("pearson_r", "rmse", "r2")
+    rows = [f for f in per_fold if any(f"{m}_lo" in f for m in metrics)]
+    if not rows:
+        return
+    print("[train] IC por bootstrap:")
+    for f in rows:
+        print(f"  fold {f.get('fold')} (val {f.get('val_year')}):")
+        for m in metrics:
+            if f"{m}_lo" in f:
+                point = f.get(m, float("nan"))
+                print(f"    {m:>10}: {point:.4f}  IC [{f[f'{m}_lo']:.4f}, {f[f'{m}_hi']:.4f}]")
 
 
 def main() -> None:
@@ -88,10 +105,19 @@ def main() -> None:
         f"(test final {results['holdout_test_year']} excluido del dev)"
     )
     print_fold_table(results["per_fold"])
+    print_ci(results["per_fold"])
     print("[train] resumen (val):")
     for k, v in results["summary"].items():
         print(f"    {k}: {v}")
         run.summary[k] = v
+
+    # IC con nombres limpios en run.summary (split fijo => un único fold).
+    if len(results["per_fold"]) == 1:
+        f0 = results["per_fold"][0]
+        for m in ("pearson_r", "rmse", "r2"):
+            if f"{m}_lo" in f0:
+                run.summary[f"{m}_lo"] = f0[f"{m}_lo"]
+                run.summary[f"{m}_hi"] = f0[f"{m}_hi"]
 
     # Tabla de folds como artefacto visual de la corrida.
     if results["per_fold"]:
@@ -99,6 +125,21 @@ def main() -> None:
         for f in results["per_fold"]:
             table.add_data(*f.values())
         run.log({"folds": table})
+
+    # Histogramas de la distribución bootstrap por métrica (si se calculó).
+    boot = results.get("bootstrap", [])
+    for entry in boot:
+        prefix = "boot" if len(boot) == 1 else f"boot/fold{entry['fold']}"
+        hist = {}
+        for name, samples in entry.items():
+            if name == "fold":
+                continue
+            s = np.asarray(samples, dtype=float)
+            s = s[np.isfinite(s)]
+            if s.size:
+                hist[f"{prefix}/{name}"] = wandb.Histogram(s)
+        if hist:
+            run.log(hist)
 
     run.finish()
     print("[train] corrida finalizada. Si mode=offline, sincronizá con: wandb sync")

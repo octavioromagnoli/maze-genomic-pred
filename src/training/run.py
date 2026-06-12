@@ -5,15 +5,37 @@ from typing import Any, Callable
 import numpy as np
 
 from src.data.loader import load_dataset
-from src.eval.metrics import regression_metrics, summarize_folds
+from src.eval.metrics import (
+    bootstrap_ci,
+    pearson_r,
+    r2,
+    regression_metrics,
+    rmse,
+    summarize_folds,
+)
 from src.eval.splits import assert_no_line_leakage, fixed_temporal_split
 from src.models.registry import build_model
 
 LogFn = Callable[[dict[str, Any]], None]
 
+# Métricas a las que se les calcula IC por bootstrap (mismo resample para las 3).
+_CI_METRICS = {"pearson_r": pearson_r, "rmse": rmse, "r2": r2}
+# Bookkeeping que NO entra al resumen; los bordes _lo/_hi tampoco (se setean
+# aparte con nombres limpios). Todo otro escalar numérico sí se resume.
+_SUMMARY_EXCLUDE = {"fold", "n", "n_train", "n_val", "val_year", "train_years"}
+
 
 def _noop(_: dict[str, Any]) -> None:
     pass
+
+
+def _is_summary_metric(k: str, v: Any) -> bool:
+    return (
+        k not in _SUMMARY_EXCLUDE
+        and not k.endswith(("_lo", "_hi"))
+        and isinstance(v, (int, float))
+        and not isinstance(v, bool)
+    )
 
 
 def _build_folds(cv_cfg: dict[str, Any], year, line_id) -> list:
@@ -39,6 +61,7 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
     Estructura del config consumida:
         data.geno_csv, data.pheno_csv, data.target, data.env
         cv.scheme, cv.val_year, cv.holdout_test_year, cv.enforce_disjoint_lines
+        bootstrap.enabled, bootstrap.n_boot, bootstrap.alpha (IC opcional)
         model.name (+ model.params)
 
     Devuelve dict con ``per_fold`` (lista de métricas) y ``summary`` (agregado).
@@ -47,6 +70,8 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
     log = log_fn or _noop
     data_cfg = config.get("data", {})
     cv_cfg = config.get("cv", {})
+    boot_cfg = config.get("bootstrap", {})
+    seed = int(config.get("seed", 42))
 
     # --- Carga directa de los CSV + arrays de modelado -----------------------
     dataset = load_dataset(data_cfg["geno_csv"], data_cfg["pheno_csv"])
@@ -64,6 +89,7 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
         )
 
     per_fold: list[dict[str, float]] = []
+    boot_samples: list[dict[str, Any]] = []
     for i, (train_idx, val_idx) in enumerate(folds):
         # Guard duro: ninguna línea cruza train/val (regla 2).
         assert_no_line_leakage(train_idx, val_idx, arrays.line_id)
@@ -89,6 +115,22 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
             train_years=str(train_years),
             val_year=val_years[0] if len(val_years) == 1 else str(val_years),
         )
+
+        if boot_cfg.get("enabled", False):
+            # IC por bootstrap a nivel línea (cluster) sobre el set de validación.
+            ci = bootstrap_ci(
+                y_va,
+                y_hat,
+                _CI_METRICS,
+                group=arrays.line_id[val_idx],
+                n_boot=int(boot_cfg.get("n_boot", 1000)),
+                alpha=float(boot_cfg.get("alpha", 0.05)),
+                seed=seed + i,
+            )
+            for name, b in ci.items():
+                m[f"{name}_lo"], m[f"{name}_hi"] = b["lo"], b["hi"]
+            boot_samples.append({"fold": i, **{name: b["samples"] for name, b in ci.items()}})
+
         per_fold.append(m)
         log({f"fold/{k}": v for k, v in m.items()})
 
@@ -99,12 +141,15 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
             "año de validación ya estaban en train; probá enforce_disjoint_lines: false."
         )
 
-    summary = summarize_folds([{k: v for k, v in f.items() if k in ("pearson_r", "rmse", "r2")} for f in per_fold])
+    summary = summarize_folds(
+        [{k: v for k, v in f.items() if _is_summary_metric(k, v)} for f in per_fold]
+    )
     log({f"summary/{k}": v for k, v in summary.items()})
 
     return {
         "per_fold": per_fold,
         "summary": summary,
+        "bootstrap": boot_samples,
         "target": target,
         "env": env,
         "n_obs": int(arrays.X.shape[0]),

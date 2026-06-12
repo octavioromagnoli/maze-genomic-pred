@@ -25,6 +25,11 @@ model:
   name: mean_predictor   # clave del registry (src/models/registry.py)
   params: {}
 
+bootstrap:
+  enabled: true     # IC por bootstrap (cluster a nivel línea) sobre validación
+  n_boot: 1000
+  alpha: 0.05       # IC del 95% (percentiles 2.5 / 97.5)
+
 wandb:
   project: maze-genomic-pred
   entity: null
