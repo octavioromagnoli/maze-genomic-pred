@@ -16,10 +16,10 @@ data:
   env: optimal      # 'optimal' / 'drought'; null = apila ambos ambientes
 
 cv:
-  scheme: temporal_grouped   # forward-chaining temporal + líneas disjuntas
-  holdout_test_year: 2020    # test final intocable, excluido de la CV
-  min_train_years: 1
-  enforce_disjoint_lines: true   # ninguna línea cruza train/val
+  scheme: fixed_temporal     # UN split fijo train/val
+  val_year: 2019             # año de validación; train = años de dev anteriores (2017-2018)
+  holdout_test_year: 2020    # test final intocable, excluido del dev
+  enforce_disjoint_lines: true   # val solo con líneas no vistas en train (escenario CV1)
 
 model:
   name: mean_predictor   # clave del registry (src/models/registry.py)

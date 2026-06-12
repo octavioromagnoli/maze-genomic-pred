@@ -1,13 +1,3 @@
-"""Loop de cross-validation reutilizable (sin dependencia dura de wandb).
-
-`run_cv` carga datos, arma los folds temporales agrupados por línea, corre el
-guard antileakage en cada fold, entrena un modelo fresco por fold y calcula las
-métricas. El logging se inyecta como callback `log_fn`, así el harness es testeable
-sin wandb y `scripts/train.py` solo cablea `wandb.log`.
-
-el año `cv.holdout_test_year` (2020 por defecto) se excluye
-de la CV y NO se evalúa acá — es el test final intocable hasta el cierre.
-"""
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -16,7 +6,7 @@ import numpy as np
 
 from src.data.loader import load_dataset
 from src.eval.metrics import regression_metrics, summarize_folds
-from src.eval.splits import assert_no_line_leakage, temporal_grouped_folds
+from src.eval.splits import assert_no_line_leakage, fixed_temporal_split
 from src.models.registry import build_model
 
 LogFn = Callable[[dict[str, Any]], None]
@@ -26,15 +16,33 @@ def _noop(_: dict[str, Any]) -> None:
     pass
 
 
-def run_cv(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[str, Any]:
-    """Corre la CV forward-chaining agrupada por línea y devuelve resultados.
+def _build_folds(cv_cfg: dict[str, Any], year, line_id) -> list:
+    """Arma el split fijo train/val. Devuelve lista de (train_idx, val_idx)."""
+    scheme = cv_cfg.get("scheme", "fixed_temporal")
+    if scheme != "fixed_temporal":
+        raise ValueError(
+            f"cv.scheme desconocido: {scheme!r}. Único soportado: 'fixed_temporal'."
+        )
+    enforce = "val" if cv_cfg.get("enforce_disjoint_lines", True) else "train"
+    return fixed_temporal_split(
+        year,
+        line_id,
+        val_year=cv_cfg.get("val_year"),
+        holdout_test_year=cv_cfg.get("holdout_test_year"),
+        enforce=enforce,
+    )
+
+
+def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[str, Any]:
+    """Corre la evaluación temporal y devuelve resultados.
 
     Estructura del config consumida:
         data.geno_csv, data.pheno_csv, data.target, data.env
-        cv.holdout_test_year, cv.min_train_years, cv.enforce_disjoint_lines
+        cv.scheme, cv.val_year, cv.holdout_test_year, cv.enforce_disjoint_lines
         model.name (+ model.params)
 
     Devuelve dict con ``per_fold`` (lista de métricas) y ``summary`` (agregado).
+    Con el split fijo ``per_fold`` tiene un único elemento.
     """
     log = log_fn or _noop
     data_cfg = config.get("data", {})
@@ -46,19 +54,13 @@ def run_cv(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[str, Any
     env = data_cfg.get("env")  # None => apila optimal + drought
     arrays = dataset.to_modeling_arrays(target=target, env=env)
 
-    # --- Folds temporales + disjuntos por línea ------------------------------
-    enforce = "val" if cv_cfg.get("enforce_disjoint_lines", True) else "train"
-    folds = temporal_grouped_folds(
-        arrays.year,
-        arrays.line_id,
-        holdout_test_year=cv_cfg.get("holdout_test_year"),
-        min_train_years=int(cv_cfg.get("min_train_years", 1)),
-        enforce=enforce,
-    )
+    # --- Split(s) temporal(es) + disjuntos por línea -------------------------
+    folds = _build_folds(cv_cfg, arrays.year, arrays.line_id)
     if not folds:
         raise RuntimeError(
-            "No se generó ningún fold de CV. Revisá que haya >= 2 años de dev "
-            f"(holdout_test_year={cv_cfg.get('holdout_test_year')}) en los datos."
+            "No se generó ningún split. Revisá cv.scheme / cv.val_year / "
+            f"cv.holdout_test_year={cv_cfg.get('holdout_test_year')} contra los "
+            "años presentes en los datos (se necesita >= 1 año de train antes del val)."
         )
 
     per_fold: list[dict[str, float]] = []
@@ -89,6 +91,13 @@ def run_cv(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[str, Any
         )
         per_fold.append(m)
         log({f"fold/{k}": v for k, v in m.items()})
+
+    if not per_fold:
+        raise RuntimeError(
+            "Todos los splits quedaron con val vacío tras enforce_disjoint_lines. "
+            "Con un split fijo esto suele significar que casi todas las líneas del "
+            "año de validación ya estaban en train; probá enforce_disjoint_lines: false."
+        )
 
     summary = summarize_folds([{k: v for k, v in f.items() if k in ("pearson_r", "rmse", "r2")} for f in per_fold])
     log({f"summary/{k}": v for k, v in summary.items()})

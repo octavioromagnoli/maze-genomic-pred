@@ -1,2 +1,2 @@
-"""Orquestación de entrenamiento + cross-validation reutilizable."""
-from src.training.run import run_cv  
+"""Orquestación de entrenamiento + evaluación temporal reutilizable."""
+from src.training.run import run_evaluation

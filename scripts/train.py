@@ -4,8 +4,9 @@ Uso:
     python scripts/train.py --config configs/exp_dummy.yaml
 
 Levanta el config, fija la seed, inicializa wandb (offline por defecto, no
-requiere login), corre la CV forward-chaining agrupada por línea y loguea
-métricas por fold + resumen. El año de test final (2020) queda fuera de la CV.
+requiere login), corre el split temporal definido en el config (por defecto un
+único train/val fijo) y loguea las métricas + resumen. El año de test final
+(2020) queda fuera del dev.
 """
 from __future__ import annotations
 
@@ -17,9 +18,9 @@ import sys
 # Permite `import src...` corriendo desde cualquier cwd.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from src.training.run import run_cv  # noqa: E402
-from src.utils.config import load_config  # noqa: E402
-from src.utils.seed import set_seed  # noqa: E402
+from src.training.run import run_evaluation
+from src.utils.config import load_config
+from src.utils.seed import set_seed
 
 
 def make_wandb_logger(run):
@@ -66,7 +67,7 @@ def main() -> None:
     mode = wandb_cfg.get("mode", "offline")
     os.environ.setdefault("WANDB_MODE", mode)
 
-    import wandb  # import tardío: el harness no depende de wandb para testear run_cv
+    import wandb  # import tardío: el harness no depende de wandb para testear run_evaluation
 
     run = wandb.init(
         project=wandb_cfg.get("project", "maze-genomic-pred"),
@@ -78,16 +79,16 @@ def main() -> None:
     )
 
     print(f"[train] experimento={config.get('experiment', {}).get('name')} seed={seed} wandb_mode={mode}")
-    results = run_cv(config, log_fn=make_wandb_logger(run))
+    results = run_evaluation(config, log_fn=make_wandb_logger(run))
 
     # Resumen a stdout + wandb.summary.
     print(
         f"[train] target={results['target']} env={results['env']} "
         f"n_obs={results['n_obs']} n_lines={results['n_lines']} "
-        f"(test final {results['holdout_test_year']} excluido de la CV)"
+        f"(test final {results['holdout_test_year']} excluido del dev)"
     )
     print_fold_table(results["per_fold"])
-    print("[train] resumen CV:")
+    print("[train] resumen (val):")
     for k, v in results["summary"].items():
         print(f"    {k}: {v}")
         run.summary[k] = v
