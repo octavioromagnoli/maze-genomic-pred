@@ -7,7 +7,7 @@ experiment:
     Corrida dummy para validar el harness completo (datos -> CV temporal
     agrupada por línea -> métricas -> wandb) antes de escribir modelos reales.
 
-seed: 67  # numpy/torch/random; se loguea entero a wandb
+seed: 575  # numpy/torch/random; se loguea entero a wandb
 
 data:
   geno_csv: data/Geno_data.csv     # GID + columnas SNP binarias
@@ -29,6 +29,11 @@ bootstrap:
   enabled: true     # IC por bootstrap (cluster a nivel línea) sobre validación
   n_boot: 1000
   alpha: 0.05       # IC del 95% (percentiles 2.5 / 97.5)
+
+artifacts:
+  save_model: true             # guarda el modelo del fold de validación (copia local + wandb Artifact)
+  name: dummy-mean-gy-optimal  # nombre del artifact
+  aliases: [latest]
 
 wandb:
   project: maze-genomic-pred

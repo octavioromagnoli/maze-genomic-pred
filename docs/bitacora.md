@@ -48,7 +48,7 @@ cualquier modelo real.
 ### Qué quedó armado
 - **Scaffold**: `src/{data,models,training,eval,utils}`, `scripts/`, `configs/`,
   `docs/`, `notebooks/`. `data/`, `experiments/`, `wandb/`, `checkpoints/`
-  gitignored. Seeds en el config (`seed: 67`), logueadas a wandb.
+  gitignored. Seeds en el config (`seed: 575`), logueadas a wandb.
 - **Datos**: loader que lee los dos CSV directo de `data/`, sin validaciones, y
   arma los arrays de modelado joineando genotipo↔fenotipo por `GID`.
 - **Harness**:
@@ -100,3 +100,29 @@ cualquier modelo real.
 
 ### Corrida de referencia
 - Config: `configs/exp_dummy.yaml`.
+
+### Persistencia: caché de resultados + Artifacts de modelo
+Centralizado en [`src/training/save_model.py`]
+
+- **Caché de resultados (notebook sin reentrenar).** `run_evaluation` se cachea a
+  disco indexado por hash de `(data, cv, model, seed, n_boot, alpha)`. El notebook
+  `comparar_modelos_ci.ipynb` lo usa vía `USE_CACHE`: en *miss* evalúa y guarda; en
+  *hit* levanta de `outputs/eval_cache` (gitignored) sin reentrenar. Cambiar
+  cualquier hiperparámetro del config invalida su entrada sola. Verificado: hit
+  reproduce RMSE 1.3414 en ~2 ms vs ~1 s del recómputo.
+- **Artifacts de modelo.** `BaseModel` ahora define `save`/`load` (default joblib;
+  los modelos torch deben overridear con `state_dict` + arquitectura). Con
+  `artifacts.save_model: true` en el config, `scripts/train.py` guarda el modelo del
+  fold de validación como copia local (`checkpoints/<name>/`) + wandb Artifact
+  (`type=model`), con metadata `{model_name, target, env, train_years, seed,
+  val_metrics}`. `run_evaluation(..., return_models=True)` expone los modelos sin
+  cambiar la firma por defecto.
+- **Guard anti-leakage al reusar** `load_model_artifact(ref,
+  expected_train_years=...)` compara los `train_years` del artifact contra los del
+  fold donde se lo quiere reusar y levanta `LeakageError` si difieren. Así, reusar un
+  encoder/AE para proyectar al espacio latente no puede meter datos de val/test en el
+  ajuste. Implicancia para el cierre: el modelo para predecir 2020 se reentrena sobre
+  todo el dev (2017–2019) → es otro artifact, con distinto `train_years`.
+- **Verificado end-to-end** con el dummy: `train.py` guardó `dummy-mean-gy-optimal`
+  (`train_years [2017, 2018]`), recargable con el guard activo; el notebook hace
+  cache hit con los mismos números.

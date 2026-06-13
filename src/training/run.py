@@ -55,7 +55,12 @@ def _build_folds(cv_cfg: dict[str, Any], year, line_id) -> list:
     )
 
 
-def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[str, Any]:
+def run_evaluation(
+    config: dict[str, Any],
+    log_fn: LogFn | None = None,
+    *,
+    return_models: bool = False,
+) -> dict[str, Any]:
     """Corre la evaluación temporal y devuelve resultados.
 
     Estructura del config consumida:
@@ -71,7 +76,7 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
     data_cfg = config.get("data", {})
     cv_cfg = config.get("cv", {})
     boot_cfg = config.get("bootstrap", {})
-    seed = int(config.get("seed", 42))
+    seed = int(config.get("seed", 575))
 
     # --- Carga directa de los CSV + arrays de modelado -----------------------
     dataset = load_dataset(data_cfg["geno_csv"], data_cfg["pheno_csv"])
@@ -90,6 +95,7 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
 
     per_fold: list[dict[str, float]] = []
     boot_samples: list[dict[str, Any]] = []
+    trained: list[dict[str, Any]] = []
     for i, (train_idx, val_idx) in enumerate(folds):
         # Guard duro: ninguna línea cruza train/val (regla 2).
         assert_no_line_leakage(train_idx, val_idx, arrays.line_id)
@@ -132,6 +138,10 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
             boot_samples.append({"fold": i, **{name: b["samples"] for name, b in ci.items()}})
 
         per_fold.append(m)
+        if return_models:
+            # Modelo ya ajustado SOLO con train de este fold; train_years queda en
+            # metadata para que load_model_artifact pueda chequear leakage al reusarlo.
+            trained.append({"fold": i, "model": model, "train_years": train_years})
         log({f"fold/{k}": v for k, v in m.items()})
 
     if not per_fold:
@@ -146,7 +156,7 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
     )
     log({f"summary/{k}": v for k, v in summary.items()})
 
-    return {
+    result: dict[str, Any] = {
         "per_fold": per_fold,
         "summary": summary,
         "bootstrap": boot_samples,
@@ -156,3 +166,6 @@ def run_evaluation(config: dict[str, Any], log_fn: LogFn | None = None) -> dict[
         "n_lines": int(dataset.n_lines),
         "holdout_test_year": cv_cfg.get("holdout_test_year"),
     }
+    if return_models:
+        result["models"] = trained
+    return result

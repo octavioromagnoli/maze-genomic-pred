@@ -20,6 +20,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
+from src.training.save_model import save_model_artifact
 from src.training.run import run_evaluation
 from src.utils.config import load_config
 from src.utils.seed import set_seed
@@ -77,7 +78,7 @@ def main() -> None:
 
     config = load_config(args.config)
 
-    seed = int(config.get("seed", 42))
+    seed = int(config.get("seed", 575))
     set_seed(seed)
 
     wandb_cfg = config.get("wandb", {})
@@ -95,8 +96,11 @@ def main() -> None:
         config=config,
     )
 
+    art_cfg = config.get("artifacts", {})
+    save_model = bool(art_cfg.get("save_model", False))
+
     print(f"[train] experimento={config.get('experiment', {}).get('name')} seed={seed} wandb_mode={mode}")
-    results = run_evaluation(config, log_fn=make_wandb_logger(run))
+    results = run_evaluation(config, log_fn=make_wandb_logger(run), return_models=save_model)
 
     # Resumen a stdout + wandb.summary.
     print(
@@ -140,6 +144,28 @@ def main() -> None:
                 hist[f"{prefix}/{name}"] = wandb.Histogram(s)
         if hist:
             run.log(hist)
+
+    # Modelo entrenado como Artifact (si el config lo pide). Con el split fijo se
+    # guarda el del único fold de validación; train_years queda en metadata para el
+    # chequeo anti-leakage al reusarlo (src/training/save_model.py).
+    if save_model and results.get("models"):
+        fold0 = results["models"][0]
+        f0 = results["per_fold"][0]
+        val_metrics = {k: f0[k] for k in ("pearson_r", "rmse", "r2") if k in f0}
+        art_name = art_cfg.get("name") or (config.get("experiment", {}).get("name") or "model").replace("_", "-")
+        art_dir = save_model_artifact(
+            fold0["model"],
+            name=art_name,
+            model_name=config.get("model", {}).get("name"),
+            train_years=fold0["train_years"],
+            target=results["target"],
+            env=results["env"],
+            seed=seed,
+            val_metrics=val_metrics,
+            run=run,
+            aliases=tuple(art_cfg.get("aliases", ["latest"])),
+        )
+        print(f"[train] modelo guardado en {art_dir} (+ wandb Artifact '{art_name}')")
 
     run.finish()
     print("[train] corrida finalizada. Si mode=offline, sincronizá con: wandb sync")
