@@ -126,3 +126,88 @@ Centralizado en [`src/training/save_model.py`]
 - **Verificado end-to-end** con el dummy: `train.py` guardó `dummy-mean-gy-optimal`
   (`train_years [2017, 2018]`), recargable con el guard activo; el notebook hace
   cache hit con los mismos números.
+
+---
+
+## Fase 1 — EDA
+
+**Objetivo:** caracterizar datos y targets, medir estructura poblacional / drift y
+relatedness, y **cerrar dos decisiones**: (a) protocolo de validación, (b) filtros
+de preprocesamiento.
+
+- **Notebook:** [`notebooks/eda.ipynb`](../notebooks/eda.ipynb) — solo orquesta y
+  grafica.
+- **Lógica reutilizable:** [`src/eda/eda.py`](../src/eda/eda.py) — cómputo puro (MAF,
+  correlaciones, PCA/drift, IBS), importable y testeable. Todos los números de abajo
+  son reproducibles corriendo el notebook (sin wandb: es EDA descriptivo).
+
+### Sellado del test 2020 (anti-leakage)
+Todo el EDA se hace **solo sobre dev (2017–2019)**. El año 2020 **no se toca** —ni
+features ni targets— hasta la evaluación de cierre, como pide la regla del proyecto
+(*"intocable hasta el cierre"*). Mirar el test, aunque sea solo `X`, mete *researcher
+degrees of freedom* y le saca su rol de prueba limpia; y **no hace falta**: ninguna
+decisión de esta fase depende de 2020 (el drift *entre años de dev* ya alcanza para
+fijar la validación temporal). Lo único que se usa de 2020 es metadato de gestión
+(existe, 486 líneas, mismas columnas, sin faltantes-relevantes).
+
+### Qué muestran los datos (todo sobre dev)
+- **Shapes / integridad.** 3528 líneas × 4612 SNPs = **3042 dev + 486 test sellado**;
+  join genotipo↔fenotipo perfecto. Genotipo **binario `{0,1}` y sin faltantes**.
+  Fenotipo: 1–2 celdas faltantes por columna (todas en dev, <0.07 %), descartadas por
+  bloque (target, env) en el loader; no se imputan targets. Cada `GID` está en **un
+  único año** ⇒ ninguna línea cruza años.
+- **QC de SNPs (dev).** **0 monomórficos**; **MAF mínima 0.033**. La matriz viene
+  curada upstream a `MAF≥0.05` sobre *todas* las campañas; recomputada solo sobre dev,
+  **7 SNPs** caen por debajo de 0.05 (`MAF≥0.10` sacaría 148). Ilustra por qué el
+  filtro se recalcula **train-only** y no una vez global.
+- **Targets (dev).** El estrés hídrico baja fuerte el rendimiento (GY ≈ 7.0 óptimo vs
+  ≈ 3.0 sequía) y la altura (PH 246 vs 211). Efecto año marcado en las medias (cada
+  campaña es un ambiente distinto). `GY_Optimal` con cola derecha leve: 3 puntos sobre
+  la cota IQR (máx 11.7) — plausibles, **se conservan**.
+- **¿Multitarea? (dev).** Dentro de un ambiente, **GY↔PH r≈0.64** (óptimo) / 0.31
+  (sequía), GY↔AD débil (0.31 / −0.04), PH↔AD moderada en óptimo (0.31) / casi nula en
+  sequía (0.10). Señal compartida sobre todo en GY↔PH ⇒ multitarea justificada como
+  **regularización por tarea auxiliar** (PH auxiliar de GY), no por redundancia.
+- **GxE (clave, dev).** `r(GY_Optimal, GY_Drought) = 0.14`: el rendimiento en óptimo y
+  en sequía es casi un trait distinto. PH (0.51) y AD (0.62) más estables entre
+  ambientes. Implicancia: **GY se modela por ambiente**; apilar óptimo+sequía mezcla
+  dos problemas poco correlacionados.
+- **Estructura y drift (dev).** PCA con varianza **muy difusa** (PC1 ~6.3 %, 10 PC
+  ~31 %) → la compresión lineal retiene poco: **anticipa el AE no lineal**. Los
+  centroides de los 3 años de dev se separan netamente. Drift cuantificado con
+  separabilidad genética (CV-AUC de logística sobre PCs): **2017 vs 2018 = 0.95, 2018
+  vs 2019 = 0.93, 2017 vs 2019 = 0.98**. Cohortes anuales genéticamente distintas ⇒ un
+  CV aleatorio filtraría la estructura de año.
+- **Relatedness / duplicados (dev).** **0 clones exactos** (3042 perfiles únicos),
+  pero relatedness alta: NN-IBS mediana ≈0.88, 25 % de las líneas con un vecino > 0.90.
+  Cruzando años de dev: **59 pares con IBS > 0.99 son cross-año** y **16 líneas (0.5 %)**
+  tienen un casi-clon en otro año de dev → parientes a ambos lados de la frontera
+  train(17–18)/val(19): inevitable y realista (escenario de despliegue).
+
+### Decisión (a) — Protocolo de validación: **split temporal fijo** (LOCK)
+Train **2017–2018**, validación **2019**, test final **2020** (intocable). **No**
+forward-chaining. Materializado en
+`fixed_temporal_split(val_year=2019, holdout_test_year=2020)` (split a nivel línea:
+train 2320, val 722, test 486; la n por target baja apenas al descartar los pocos
+fenotipos faltantes). Fundamentos del EDA (**sin mirar 2020**):
+- **Drift fuerte entre años de dev** (AUC 0.95–0.98) ⇒ la validación tiene que ser
+  temporal; un CV aleatorio mezclaría cohortes y sobreestimaría el desempeño.
+- **Forward-chaining daría un fold entrenado solo en 2017** (n≈900), la cohorte más
+  atípica del dev (AUC 0.95 vs 2018, 0.98 vs 2019) → estimación ruidosa, pesimista y
+  poco representativa, sin comprar robustez con apenas 3 años de dev.
+- El split fijo **maximiza el train** y **replica el despliegue**: 2019 (año más
+  reciente del dev) es el análogo natural de "predecir la campaña siguiente".
+- **Líneas disjuntas garantizadas** (cada `GID` en un año). El ~0.5 % de casi-clones
+  cross-año se **acepta como realista** (en mejoramiento las líneas de un año son
+  parientes de las del siguiente), y queda documentado.
+
+### Decisión (b) — Filtros de preprocesamiento (LOCK)
+- **MAF ≥ 0.05**, **recalculado con el train de cada fold**. Sobre dev descarta 7 SNPs
+  (deja 4605); por fold el número puede variar. Sin remoción de monomórficos (no hay).
+- **Imputación de genotipo: no requerida** (0 faltantes). Política codificada por si
+  una reextracción introdujera NaN: **alelo mayoritario ajustado solo en el train del
+  fold** (`eda.impute_major_allele`). **Fenotipo:** las 1–2 celdas faltantes por
+  columna se **descartan** por bloque (target, env); no se imputan targets.
+- **Escalado:** SNPs binarios → estandarización por-SNP (media/var) **solo para los
+  modelos lineales** (Ridge/GBLUP), ajustada en train; el AE consume `{0,1}` crudo con
+  salida sigmoide + BCE (regla 4).
