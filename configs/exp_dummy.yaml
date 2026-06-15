@@ -25,6 +25,10 @@ model:
   name: mean_predictor   # clave del registry (src/models/registry.py)
   params: {}
 
+preprocess:              # preprocesamiento train-only de SNPs (común a todos los modelos)
+  maf_threshold: 0.05    # filtro de MAF, decisión (b) del EDA; recalculado con el train de cada fold
+  standardize: false     # SNPs {0,1}: los lineales (Ridge/GBLUP) lo activan; el AE NO (usa {0,1} crudo)
+
 bootstrap:
   enabled: true     # IC por bootstrap (cluster a nivel línea) sobre validación
   n_boot: 1000

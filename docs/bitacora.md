@@ -158,8 +158,7 @@ fijar la validación temporal). Lo único que se usa de 2020 es metadato de gest
   único año** ⇒ ninguna línea cruza años.
 - **QC de SNPs (dev).** **0 monomórficos**; **MAF mínima 0.033**. La matriz viene
   curada upstream a `MAF≥0.05` sobre *todas* las campañas; recomputada solo sobre dev,
-  **7 SNPs** caen por debajo de 0.05 (`MAF≥0.10` sacaría 148). Ilustra por qué el
-  filtro se recalcula **train-only** y no una vez global.
+  **7 SNPs** caen por debajo de 0.05 (`MAF≥0.10` sacaría innecesariamente 148). 
 - **Targets (dev).** El estrés hídrico baja fuerte el rendimiento (GY ≈ 7.0 óptimo vs
   ≈ 3.0 sequía) y la altura (PH 246 vs 211). Efecto año marcado en las medias (cada
   campaña es un ambiente distinto). `GY_Optimal` con cola derecha leve: 3 puntos sobre
@@ -210,4 +209,17 @@ fenotipos faltantes). Fundamentos del EDA (**sin mirar 2020**):
   columna se **descartan** por bloque (target, env); no se imputan targets.
 - **Escalado:** SNPs binarios → estandarización por-SNP (media/var) **solo para los
   modelos lineales** (Ridge/GBLUP), ajustada en train; el AE consume `{0,1}` crudo con
-  salida sigmoide + BCE (regla 4).
+  salida sigmoide + BCE (regla 4). *(Estar en {0,1} fija el rango, no la escala: un SNP
+  binario tiene varianza p(1−p), que entre MAF 0.05 y 0.5 va ~5×; la L2 de Ridge no es
+  invariante a escala → sin estandarizar sobre-penaliza los SNPs de baja MAF. Por eso
+  es opt-in por modelo.)*
+
+**Implementación (general, train-only).** El preprocesamiento vive una sola vez en
+[`src/data/preprocess.py`](../src/data/preprocess.py) (`SNPPreprocessor`: filtro de MAF
++ estandarización opcional, ajustado SOLO con el train) y se compone con **cualquier**
+modelo vía `PreprocessedModel` (en [`src/models/registry.py`](../src/models/registry.py)),
+sin reescribirlo por modelo. Se activa con el bloque `preprocess:` del config
+(`maf_threshold`, `standardize`) y `build_model` lo envuelve automáticamente; viaja
+dentro del artifact guardado (reusar no puede aplicar otro preprocesamiento). El hash
+del caché incluye `preprocess`. Verificado con el dummy: RMSE 1.3414 sin cambios (ignora
+X) y el train 2017–2018 filtra 21 SNPs (el conteo depende del fold).
