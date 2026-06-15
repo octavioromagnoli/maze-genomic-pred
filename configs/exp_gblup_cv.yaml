@@ -1,0 +1,49 @@
+# GBLUP — Enfoque A: lambda_0 por validación cruzada temporal (sin leakage).
+# Hiperparámetros ACÁ; nunca editando código.
+
+experiment:
+  name: gblup_cv
+  description: >
+    GBLUP con el ratio de varianzas lambda_0 elegido por CV temporal del propio
+    predictor GBLUP (inner-train 2017 -> inner-val 2018), re-estandarizando y
+    re-centrando por fold (sin leakage). Predicción por la fórmula hat-matrix
+    del paper.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: gblup
+  params:
+    lambda_method: cv     # Enfoque A
+    internal_cv: temporal # selección interna de lambda_0: 'temporal' (2017->2018, respeta regla 3)
+                          # o 'kfold' (K-fold clásico). Default temporal.
+    cv_folds: 10          # solo se usa si internal_cv=kfold (o si no hay >=2 años en train)
+    # alpha_grid: por defecto np.logspace(-4, 4, 100) en el modelo
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: gblup-cv-gy-optimal
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [gblup, cv, baseline]

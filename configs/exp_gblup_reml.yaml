@@ -1,0 +1,45 @@
+# GBLUP — Enfoque B: lambda_0 por REML (componentes de varianza).
+# Equivalente conceptual a las varianzas a posteriori de BGLR (MCMC), pero por
+# REML vía eigen-descomposición de G_TS + optimizador numérico.
+
+experiment:
+  name: gblup_reml
+  description: >
+    GBLUP con lambda_0 = sigma_E^2 / sigma_u^2 estimado por REML sobre el modelo
+    mixto y = mu + g + e (g ~ N(0, sigma_u^2 G_TS), e ~ N(0, sigma_E^2 I)).
+    Predicción por la fórmula hat-matrix del paper.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml   # Enfoque B
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: gblup-reml-gy-optimal
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [gblup, reml, baseline]

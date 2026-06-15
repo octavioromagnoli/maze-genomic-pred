@@ -44,6 +44,7 @@ def fixed_temporal_split(
     *,
     val_year: int | None = None,
     holdout_test_year: int | None = None,
+    train_years: list[int] | None = None,
     enforce: str = "val",
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """Split temporal
@@ -51,6 +52,12 @@ def fixed_temporal_split(
     ``train`` = todos los años de dev anteriores a ``val_year``; ``val`` = el
     año ``val_year``. El ``holdout_test_year`` se excluye de ambos (test final
     intocable). Si ``val_year`` es ``None`` se usa el año más reciente del dev.
+
+    ``train_years`` (opcional) fija explícitamente los años de train, en vez de
+    "todos los anteriores a ``val_year``". Sirve para experimentos puntuales
+    (p.ej. entrenar solo 2018 → predecir 2020). Se intersecta con los años
+    disponibles y se restringe a años ESTRICTAMENTE anteriores a ``val_year``
+    (nunca se mete un año >= val en train; no hay leak temporal hacia el train).
 
     Aplica `enforce_disjoint_lines` para respetar la regla de líneas disjuntas:
     con ``enforce='val'`` el set de validación queda solo con líneas NO vistas
@@ -68,11 +75,15 @@ def fixed_temporal_split(
     vy = uniq[-1] if val_year is None else int(val_year)
     if vy not in uniq:
         return []
-    train_years = [y for y in uniq if y < vy]
-    if not train_years:
+    if train_years is not None:
+        requested = {int(y) for y in train_years}
+        sel_years = [y for y in uniq if y < vy and y in requested]
+    else:
+        sel_years = [y for y in uniq if y < vy]
+    if not sel_years:
         return []
 
-    train_idx = np.flatnonzero(np.isin(year, train_years))
+    train_idx = np.flatnonzero(np.isin(year, sel_years))
     val_idx = np.flatnonzero(year == vy)
     tr, va = enforce_disjoint_lines(train_idx, val_idx, line_id, drop_from=enforce)
     return [(tr, va)]
