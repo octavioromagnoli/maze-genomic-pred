@@ -78,6 +78,7 @@ def save_model_artifact(
     env: str | None,
     seed: int,
     val_metrics: dict[str, float] | None = None,
+    fitted_params: dict[str, Any] | None = None,
     run: Any | None = None,
     aliases: tuple[str, ...] = ("latest",),
     checkpoints_dir: str | Path | None = None,
@@ -107,6 +108,14 @@ def save_model_artifact(
             k: (float(v) if math.isfinite(v) else None)
             for k, v in val_metrics.items()
             if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+    if fitted_params:
+        # Estimaciones del modelo (lambda_0, varianzas REML, esquema de CV interna)
+        # quedan en la metadata para inspeccionarlas sin recargar el modelo.
+        meta["fitted_params"] = {
+            k: (float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
+            for k, v in fitted_params.items()
+            if v is not None
         }
     (base / _META_FILE).write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 

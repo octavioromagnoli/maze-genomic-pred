@@ -1,0 +1,48 @@
+# GBLUP — EXPERIMENTO de cierre puntual: entrenar SOLO con 2018, predecir 2020.
+#
+# OJO: este run usa el holdout 2020 (regla 3: intocable hasta el cierre) y entrena
+# con un único año (no con todo el dev 2017-2019). Es un experimento explícito,
+# no la evaluación de dev. lambda_0 por REML (estimador recomendado en este dataset).
+
+experiment:
+  name: gblup_reml_2018_to_2020
+  description: >
+    GBLUP entrenado únicamente con la campaña 2018 y evaluado sobre 2020
+    (holdout). lambda_0 = sigma_E^2/sigma_u^2 por REML. Predicción por la
+    fórmula hat-matrix del paper.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2020            # "val" = año a predecir (acá el holdout 2020)
+  train_years: [2018]       # override: train SOLO con 2018 (no todo el dev)
+  holdout_test_year: null   # no excluir 2020: justamente lo queremos como target
+  enforce_disjoint_lines: true   # cada GID está en un solo año => 2018 y 2020 ya disjuntos
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: gblup-reml-2018-to-2020
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [gblup, reml, closure, train2018, test2020]

@@ -10,9 +10,11 @@ from typing import Any
 
 from src.models.base import BaseModel
 from src.models.dummy import MeanPredictor
+from src.models.gblup import GBLUP
 
 REGISTRY: dict[str, type[BaseModel]] = {
     "mean_predictor": MeanPredictor,
+    "gblup": GBLUP,
 }
 
 
