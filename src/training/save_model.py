@@ -28,6 +28,7 @@ def results_cache_key(config: dict[str, Any], *, n_boot: int, alpha: float) -> s
         "data": config.get("data"),
         "cv": config.get("cv"),
         "model": config.get("model"),
+        "preprocess": config.get("preprocess"),
         "seed": config.get("seed"),
         "n_boot": int(n_boot),
         "alpha": float(alpha),
