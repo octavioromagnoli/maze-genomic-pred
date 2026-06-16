@@ -51,6 +51,7 @@ def _build_folds(cv_cfg: dict[str, Any], year, line_id) -> list:
         line_id,
         val_year=cv_cfg.get("val_year"),
         holdout_test_year=cv_cfg.get("holdout_test_year"),
+        train_years=cv_cfg.get("train_years"),
         enforce=enforce,
     )
 
@@ -108,6 +109,8 @@ def run_evaluation(
         X_va, y_va = arrays.X[val_idx], arrays.y[val_idx]
 
         model = build_model(config)  # modelo fresco por fold (sin fuga de estado)
+        # Contexto del fold para selección interna de HP temporal-aware (regla 3).
+        model.set_fit_context(year=arrays.year[train_idx], line_id=arrays.line_id[train_idx])
         model.fit(X_tr, y_tr)
         y_hat = model.predict(X_va)
 
@@ -121,6 +124,13 @@ def run_evaluation(
             train_years=str(train_years),
             val_year=val_years[0] if len(val_years) == 1 else str(val_years),
         )
+        # Estimaciones del modelo (lambda_0, varianzas REML, ...) → métricas del
+        # fold: los escalares numéricos se logean a wandb (fold/* y summary/*) y
+        # quedan inspeccionables sin bajar el modelo.
+        fitted_params = model.get_fitted_params()
+        for k, v in fitted_params.items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                m[k] = v
 
         if boot_cfg.get("enabled", False):
             # IC por bootstrap a nivel línea (cluster) sobre el set de validación.
@@ -141,7 +151,13 @@ def run_evaluation(
         if return_models:
             # Modelo ya ajustado SOLO con train de este fold; train_years queda en
             # metadata para que load_model_artifact pueda chequear leakage al reusarlo.
-            trained.append({"fold": i, "model": model, "train_years": train_years})
+            # fitted_params (incluye no-numéricos como lambda_method) → metadata del artifact.
+            trained.append({
+                "fold": i,
+                "model": model,
+                "train_years": train_years,
+                "fitted_params": fitted_params,
+            })
         log({f"fold/{k}": v for k, v in m.items()})
 
     if not per_fold:

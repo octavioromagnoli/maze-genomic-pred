@@ -152,6 +152,13 @@ def main() -> None:
         fold0 = results["models"][0]
         f0 = results["per_fold"][0]
         val_metrics = {k: f0[k] for k in ("pearson_r", "rmse", "r2") if k in f0}
+        fitted_params = fold0.get("fitted_params") or {}
+        if fitted_params:
+            print(f"[train] estimaciones del modelo: {fitted_params}")
+            # También a run.summary (escalares) para inspeccionar en wandb sin bajar el modelo.
+            for k, v in fitted_params.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    run.summary[k] = v
         art_name = art_cfg.get("name") or (config.get("experiment", {}).get("name") or "model").replace("_", "-")
         art_dir = save_model_artifact(
             fold0["model"],
@@ -162,6 +169,7 @@ def main() -> None:
             env=results["env"],
             seed=seed,
             val_metrics=val_metrics,
+            fitted_params=fitted_params,
             run=run,
             aliases=tuple(art_cfg.get("aliases", ["latest"])),
         )
