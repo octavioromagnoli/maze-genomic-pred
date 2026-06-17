@@ -1,0 +1,45 @@
+# GBLUP — train 2017+2018 -> predecir 2019 sobre PH_Optimal (dev, NO toca el holdout 2020).
+# lambda_0 por REML. Predicción por la fórmula hat-matrix del paper.
+
+experiment:
+  name: gblup_reml_2017_2018_to_2019_PH_optimal
+  description: >
+    GBLUP entrenado con 2017+2018 y evaluado sobre 2019 para el target PH_Optimal
+    (altura de planta en ambiente óptimo). lambda_0 = sigma_E^2/sigma_u^2 por REML.
+    2020 queda como holdout intocable.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: PH
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019            # año a predecir
+  train_years: [2017, 2018] # train explícito
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: gblup-reml-2017-2018-to-2019-PH-optimal
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [gblup, reml, dev, train2017-2018, val2019, PH, optimal]
