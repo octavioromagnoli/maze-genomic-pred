@@ -34,4 +34,4 @@ command:
   - ${interpreter}
   - ${program}
   - "--config"
-  - configs/exp_pca_expanding_dev.yaml
+  - configs/exp_pca_gblup_expanding_dev.yaml
