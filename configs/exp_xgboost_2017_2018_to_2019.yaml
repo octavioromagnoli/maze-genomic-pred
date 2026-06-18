@@ -1,0 +1,61 @@
+# XGBoost — train 2017+2018 -> predecir 2019 sobre GY (dev, NO toca el holdout 2020).
+# Selecciona n_estimators con 2017 -> 2018 y reentrena final con 2017+2018.
+
+experiment:
+  name: xgboost_2017_2018_to_2019
+  description: >
+    XGBoost (gradient boosting) entrenado con 2017+2018 y evaluado sobre 2019
+    para el target GY en ambiente óptimo. Selecciona el número de árboles con
+    early stopping temporal interno (2017 -> 2018) y luego reentrena con todo
+    2017+2018. 2020 queda como holdout intocable.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019            # año a predecir
+  train_years: [2017, 2018] # train explícito
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# Preprocesamiento train-only (regla 1): filtra SNPs de baja MAF en el train del fold.
+preprocess:
+  maf_threshold: 0.05
+  standardize: false        # los árboles no requieren escala
+
+model:
+  name: xgboost
+  params:
+    n_estimators: 1000          # máximo para la selección interna
+    max_depth: 4
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.5
+    reg_lambda: 1.0
+    n_jobs: 1                  # evita segfault nativo observado con n_jobs=-1
+    early_stopping_rounds: 50   # selecciona n_estimators con 2017 -> 2018
+    eval_scheme: temporal
+    refit_full_train: true      # modelo final con 2017+2018 y árboles seleccionados
+    random_state: 575
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: xgboost-2017-2018-to-2019
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [xgboost, dev, train2017-2018, val2019, GY, optimal]

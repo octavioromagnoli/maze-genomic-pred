@@ -310,3 +310,78 @@ base (Lopez-Cruz et al.), forma *hat matrix*:
 - Configs: `configs/exp_gblup_cv.yaml` (Enfoque A) y `configs/exp_gblup_reml.yaml`
   (Enfoque B). Corridas ejecutadas en modo wandb offline. El cierre sobre 2020
   sigue pendiente y requiere reentrenar sobre todo el dev 2017–2019.
+
+## Fase 4 — XGBoost base
+
+**Objetivo:** primer modelo no lineal sobre los SNPs. Gradient boosting de árboles
+(XGBoost) como baseline alternativo a GBLUP, para contrastar si capturar
+interacciones/no-linealidades aporta sobre el modelo lineal mixto en régimen p≫n.
+
+### Qué quedó armado
+- **Modelo** [`src/models/xgb.py`](../src/models/xgb.py): `XGBoostRegressor(BaseModel)`,
+  wrapper fino sobre `xgboost.XGBRegressor` enganchado a la interfaz común
+  (`fit`/`predict`) y al harness de Fase 0. Registrado como `xgboost` en
+  [`src/models/registry.py`](../src/models/registry.py). No hace preprocesamiento
+  propio: con bloque `preprocess:` lo envuelve `PreprocessedModel` (máscara MAF
+  train-only, regla 1).
+- **Configs**: [`configs/exp_xgboost_2017_2018_to_2019.yaml`](../configs/exp_xgboost_2017_2018_to_2019.yaml)
+  (early stopping temporal) y
+  [`configs/exp_xgboost_2017_2018_to_2019_2000fixed.yaml`](../configs/exp_xgboost_2017_2018_to_2019_2000fixed.yaml)
+  (2000 árboles fijos, sin early stopping). HP por `model.params`, sin tocar código.
+
+### Early stopping temporal + refit sobre todo el train (regla 3)
+- Con `params.early_stopping_rounds`, en vez de un holdout aleatorio se usa un
+  **inner-split temporal** dentro del train del fold (`temporal_inner_split`):
+  inner-train = años previos, inner-val = último año (train 2017+2018 ⇒ ajusta
+  2017, monitorea 2018). El eval set vive dentro del train externo, no toca
+  val/test (no viola la regla 3).
+- XGBoost agrega árboles de a uno y mide RMSE sobre el inner-val ronda a ronda;
+  `early_stopping_rounds` es la **paciencia** (frena tras N rondas sin mejora) y se
+  queda con `best_iteration`. El wrapper toma `selected = best_iteration + 1`
+  (acotado a `[1, n_estimators]`).
+- **`refit_full_train`** (default `True`): el modelo de selección se descarta y se
+  reentrena uno final desde cero con `selected` árboles sobre **todo** el train del
+  fold (2017+2018). Así el número de árboles se valida temporalmente pero el modelo
+  final no desperdicia el último año. Con un solo año en train el early stopping se
+  desactiva solo y se usan los `n_estimators` fijos.
+
+### Integración con `PreprocessedModel` (correcciones)
+- `run_evaluation` setea el `fit_context` (con `year`) sobre el modelo **externo**.
+  `PreprocessedModel` ahora **propaga `set_fit_context` al modelo interno**; sin
+  esto el `XGBoostRegressor` envuelto recibía `year=None` y el early stopping
+  temporal quedaba silenciosamente desactivado (todos los configs usan `preprocess:`).
+- `PreprocessedModel.fit` delega en `fit_with_preprocessor` si el modelo interno la
+  expone: para la **selección** el preprocesador (máscara MAF) se ajusta solo con el
+  inner-train; para el **modelo final refitteado** se ajusta con todo el train
+  externo. Refuerza la regla 1 en el paso de selección.
+- `PreprocessedModel.get_fitted_params` propaga los del modelo interno (para que
+  wandb logee `best_iteration`/`selected_n_estimators` sin bajar el modelo).
+- **Entorno**: en local (XGBoost 3.2.0 + torch) `n_jobs=-1` segfaultea por doble
+  carga de `libomp`. Default conservador `n_jobs=1`; alternativa al correr vía
+  entorno: `OMP_NUM_THREADS=1`.
+
+### Verificación
+- **Smoke test sintético** (`build_model` + `set_fit_context`): el early stopping
+  engancha con ≥2 años (selecciona árboles, refittea), se desactiva con 1 año, y
+  los `fitted_params` se propagan por el wrapper.
+- **Control de no-regresión**: con early stopping desactivado se reproduce
+  **exactamente** el resultado de 2000/1000 árboles fijos, aislando el efecto de la
+  selección.
+
+### Corridas de referencia (`GY/optimal`, train 2017–2018 `n=2319`, val 2019 `n=722`, 2020 holdout)
+- **Early stopping (base)** ([run `qssy1kot`](https://wandb.ai/oromagnoli-/maze-genomic-pred/runs/qssy1kot)):
+  selecciona **5 árboles** (`best_iteration=4`; el RMSE de inner-val 2018 no mejora
+  más allá), refit sobre todo el train. Pearson `0.0966` IC95% `[0.0322, 0.1669]`,
+  RMSE `1.3216`, R² `−0.7158`.
+- **2000 árboles fijos** ([run `z9wmphtw`](https://wandb.ai/oromagnoli-/maze-genomic-pred/runs/z9wmphtw)):
+  Pearson `0.2164` IC95% `[0.1442, 0.2849]`, RMSE `1.3498`, R² `−0.7898`. Duplicar
+  los árboles respecto de 1000 no cambia nada (saturado): el techo de esta familia
+  de HP por la vía de "más árboles" es ~`0.216`.
+- **Lectura**: el early stopping minimiza **RMSE de 2018** (inner-val), objetivo que
+  diverge de la métrica de portada (**Pearson de 2019**); frena tempranísimo y
+  underfittea para el ranking. Ese techo de árboles fijos (~`0.216`) queda igual
+  **por debajo de GBLUP-REML** (`0.3145`): el boosting de árboles no cierra la
+  brecha del modelo lineal mixto en este p≫n; los grados de libertad pendientes son
+  `max_depth`/`learning_rate`/submuestreo/regularización, no más árboles.
+- Runs de referencia sincronizadas a wandb (`qssy1kot`, `z9wmphtw`). El cierre
+  sobre 2020 sigue intocable (regla 3).
