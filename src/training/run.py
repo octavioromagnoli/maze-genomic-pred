@@ -13,7 +13,11 @@ from src.eval.metrics import (
     rmse,
     summarize_folds,
 )
-from src.eval.splits import assert_no_line_leakage, fixed_temporal_split
+from src.eval.splits import (
+    assert_no_line_leakage,
+    expanding_temporal_split,
+    fixed_temporal_split,
+)
 from src.models.registry import build_model
 
 LogFn = Callable[[dict[str, Any]], None]
@@ -39,20 +43,55 @@ def _is_summary_metric(k: str, v: Any) -> bool:
 
 
 def _build_folds(cv_cfg: dict[str, Any], year, line_id) -> list:
-    """Arma el split fijo train/val. Devuelve lista de (train_idx, val_idx)."""
+    """Arma los folds temporales. Devuelve lista de ``(train_idx, val_idx, scoring)``.
+
+    ``scoring=False`` marca folds de DIAGNÓSTICO: se evalúan y loguean igual, pero
+    NO entran en el resumen (``pearson_r_mean``) que optimiza el sweep.
+
+    Schemes:
+    - ``fixed_temporal``: un único fold de scoring (split fijo train/val).
+    - ``expanding_temporal``: folds de scoring por ``val_years`` (expanding window,
+      train = años previos) + folds de diagnóstico opcionales en ``report_only``
+      (lista de ``{val_year, train_years?}``; sin ``train_years`` usa expanding).
+    """
     scheme = cv_cfg.get("scheme", "fixed_temporal")
-    if scheme != "fixed_temporal":
-        raise ValueError(
-            f"cv.scheme desconocido: {scheme!r}. Único soportado: 'fixed_temporal'."
-        )
     enforce = "val" if cv_cfg.get("enforce_disjoint_lines", True) else "train"
-    return fixed_temporal_split(
-        year,
-        line_id,
-        val_year=cv_cfg.get("val_year"),
-        holdout_test_year=cv_cfg.get("holdout_test_year"),
-        train_years=cv_cfg.get("train_years"),
-        enforce=enforce,
+    htest = cv_cfg.get("holdout_test_year")
+
+    if scheme == "fixed_temporal":
+        fs = fixed_temporal_split(
+            year, line_id,
+            val_year=cv_cfg.get("val_year"),
+            holdout_test_year=htest,
+            train_years=cv_cfg.get("train_years"),
+            enforce=enforce,
+        )
+        return [(tr, va, True) for tr, va in fs]
+
+    if scheme == "expanding_temporal":
+        folds: list = [
+            (tr, va, True)
+            for tr, va in expanding_temporal_split(
+                year, line_id,
+                val_years=cv_cfg.get("val_years", []),
+                holdout_test_year=htest,
+                enforce=enforce,
+            )
+        ]
+        for spec in cv_cfg.get("report_only", []):
+            fs = fixed_temporal_split(
+                year, line_id,
+                val_year=spec["val_year"],
+                holdout_test_year=htest,
+                train_years=spec.get("train_years"),
+                enforce=enforce,
+            )
+            folds += [(tr, va, False) for tr, va in fs]
+        return folds
+
+    raise ValueError(
+        f"cv.scheme desconocido: {scheme!r}. Soportados: "
+        "'fixed_temporal', 'expanding_temporal'."
     )
 
 
@@ -97,7 +136,7 @@ def run_evaluation(
     per_fold: list[dict[str, float]] = []
     boot_samples: list[dict[str, Any]] = []
     trained: list[dict[str, Any]] = []
-    for i, (train_idx, val_idx) in enumerate(folds):
+    for i, (train_idx, val_idx, scoring) in enumerate(folds):
         # Guard duro: ninguna línea cruza train/val (regla 2).
         assert_no_line_leakage(train_idx, val_idx, arrays.line_id)
         if len(val_idx) == 0:
@@ -119,6 +158,7 @@ def run_evaluation(
         val_years = sorted(set(int(y) for y in arrays.year[val_idx]))
         m.update(
             fold=i,
+            role="scoring" if scoring else "report",
             n_train=int(len(train_idx)),
             n_val=int(len(val_idx)),
             train_years=str(train_years),
@@ -158,7 +198,10 @@ def run_evaluation(
                 "train_years": train_years,
                 "fitted_params": fitted_params,
             })
-        log({f"fold/{k}": v for k, v in m.items()})
+        # Clave propia por fold (f{i}_{role}_{val_year}/...) para que en wandb cada
+        # fold sea un panel separado y su summary no se pise con el del fold siguiente.
+        tag = f"f{i}_{m['role']}_{m['val_year']}"
+        log({f"{tag}/{k}": v for k, v in m.items()})
 
     if not per_fold:
         raise RuntimeError(
@@ -167,8 +210,12 @@ def run_evaluation(
             "año de validación ya estaban en train; probá enforce_disjoint_lines: false."
         )
 
+    # El resumen (pearson_r_mean -> métrica que optimiza el sweep) usa SOLO los
+    # folds de scoring; los de diagnóstico (role="report") se loguean por fold
+    # pero no entran en el agregado.
+    scoring_folds = [f for f in per_fold if f.get("role") == "scoring"]
     summary = summarize_folds(
-        [{k: v for k, v in f.items() if _is_summary_metric(k, v)} for f in per_fold]
+        [{k: v for k, v in f.items() if _is_summary_metric(k, v)} for f in scoring_folds]
     )
     log({f"summary/{k}": v for k, v in summary.items()})
 

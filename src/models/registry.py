@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from src.data.preprocess import SNPPreprocessor, build_preprocessor
+from src.data.preprocess import build_preprocessor
 from src.models.base import BaseModel
 from src.models.dummy import MeanPredictor
 from src.models.gblup import GBLUP
@@ -28,10 +28,17 @@ class PreprocessedModel(BaseModel):
     entero (default de `BaseModel`), que persiste `pre` + `inner` juntos.
     """
 
-    def __init__(self, pre: SNPPreprocessor, inner: BaseModel) -> None:
+    def __init__(self, pre: Any, inner: BaseModel) -> None:
         super().__init__(getattr(inner, "config", {}))
         self.pre = pre
         self.inner = inner
+
+    def set_fit_context(self, **context: Any) -> None:
+        # Propaga el contexto del fold (year/line_id) al modelo interno: lo usa
+        # para su selección de HP temporal-aware. Sin
+        # esto el inner no vería los años y caería a K-fold aleatorio
+        super().set_fit_context(**context)
+        self.inner.set_fit_context(**context)
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "PreprocessedModel":
         Xt = self.pre.fit_transform(X)   # fit del preprocesador solo con train
@@ -40,6 +47,15 @@ class PreprocessedModel(BaseModel):
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return self.inner.predict(self.pre.transform(X))   # mismas columnas/stats de train
+
+    def get_fitted_params(self) -> dict[str, Any]:
+        # Estimaciones del modelo interno (alpha, lambda_0, ...) + del
+        # preprocesador (n_components/varianza del PCA) → se logean por fold.
+        out = dict(self.inner.get_fitted_params())
+        gfp = getattr(self.pre, "get_fitted_params", None)
+        if callable(gfp):
+            out.update(gfp())
+        return out
 
 
 def build_model(config: dict[str, Any]) -> BaseModel:

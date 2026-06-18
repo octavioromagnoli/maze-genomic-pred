@@ -1,0 +1,37 @@
+# Sweep: elegir la dimensión de PCA por desempeño en GBLUP (Pearson en val 2019).
+#
+# Uso:
+#   wandb login                       # una vez (el controller del sweep es online)
+#   wandb sweep configs/sweep_pca_dim.yaml      # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent <entity>/<project>/<sweep_id>   # dentro de tmux
+#
+# Notas:
+# - Barre SOLO la dimensión. NO incluir cv.* ni data.* en parameters: el split
+#   (train 2017-2018 -> val 2019, holdout 2020) queda CLAVADO en el config base
+#   (reglas 2 y 3, 2020 sellado).
+# - La métrica es la portada del proyecto: pearson_r_mean (regla 5), maximizar.
+#   train.py la deja en run.summary, que es lo que el controller lee.
+# - El bloque `command` fija --config y NO incluye ${args}: así argparse de
+#   train.py solo ve --config y los HP barridos llegan por wandb.config (merge
+#   con notacion punto en train.py).
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_pca_dim
+program: scripts/train.py
+method: grid                 # prueba cada dimensión de la lista una vez
+
+metric:
+  name: pearson_r_mean
+  goal: maximize
+
+parameters:
+  preprocess.pca.n_components:
+    values: [900, 950, 1000, 1050, 1100, 1200]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_pca_expanding_dev.yaml
