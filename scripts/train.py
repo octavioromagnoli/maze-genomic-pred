@@ -22,8 +22,22 @@ import numpy as np
 
 from src.training.save_model import save_model_artifact
 from src.training.run import run_evaluation
-from src.utils.config import load_config
+from src.utils.config import load_config, set_nested
 from src.utils.seed import set_seed
+
+
+def apply_sweep_overrides(config: dict, wandb_config: dict) -> dict:
+    """Aplica los HP barridos por un sweep sobre el config anidado.
+
+    wandb deja los parámetros del trial como claves planas con punto
+    (``"preprocess.pca.n_components"``) en ``run.config``; las llevamos al dict
+    anidado que consume `run_evaluation`. En una corrida normal no hay claves con
+    punto, así que esto es no-op. Devuelve los overrides aplicados (para log).
+    """
+    overrides = {k: v for k, v in wandb_config.items() if "." in k}
+    for dotted, value in overrides.items():
+        set_nested(config, dotted, value)
+    return overrides
 
 
 def make_wandb_logger(run):
@@ -44,7 +58,7 @@ def print_fold_table(per_fold: list[dict]) -> None:
     if not per_fold:
         print("  (sin folds)")
         return
-    cols = ["fold", "val_year", "n_train", "n_val", "pearson_r", "rmse", "r2"]
+    cols = ["fold", "role", "val_year", "n_train", "n_val", "pearson_r", "rmse", "r2"]
     header = "  " + "  ".join(f"{c:>10}" for c in cols)
     print(header)
     print("  " + "-" * (len(header) - 2))
@@ -78,11 +92,11 @@ def main() -> None:
 
     config = load_config(args.config)
 
-    seed = int(config.get("seed", 575))
-    set_seed(seed)
-
     wandb_cfg = config.get("wandb", {})
-    mode = wandb_cfg.get("mode", "offline")
+    # WANDB_MODE del entorno tiene precedencia sobre el config: permite correr el
+    # agente de un sweep en online (WANDB_MODE=online wandb agent ...) sin editar
+    # el YAML base, que puede quedar en offline para las corridas normales.
+    mode = os.environ.get("WANDB_MODE") or wandb_cfg.get("mode", "offline")
     os.environ.setdefault("WANDB_MODE", mode)
 
     import wandb  # import tardío: el harness no depende de wandb para testear run_evaluation
@@ -95,6 +109,16 @@ def main() -> None:
         mode=mode,
         config=config,
     )
+
+    # Si esto corre bajo un sweep, wandb ya inyectó los HP del trial en run.config
+    # como claves planas con punto: las aplicamos al config anidado ANTES de fijar
+    # la seed y de modelar. En una corrida normal no hay overrides y es no-op.
+    overrides = apply_sweep_overrides(config, dict(run.config))
+    if overrides:
+        print(f"[train] sweep overrides aplicados: {overrides}")
+
+    seed = int(config.get("seed", 575))
+    set_seed(seed)
 
     art_cfg = config.get("artifacts", {})
     save_model = bool(art_cfg.get("save_model", False))

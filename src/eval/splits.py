@@ -89,6 +89,31 @@ def fixed_temporal_split(
     return [(tr, va)]
 
 
+def expanding_temporal_split(
+    year,
+    line_id,
+    *,
+    val_years: list[int],
+    holdout_test_year: int | None = None,
+    enforce: str = "val",
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Validación temporal *expanding window* (forward chaining).
+
+    Por cada año en ``val_years`` arma un fold cuyo train son todos los años de
+    dev ESTRICTAMENTE anteriores (excluyendo ``holdout_test_year``): p.ej. con
+    ``val_years=[2018, 2019]`` da [train 2017 -> val 2018, train 2017+2018 -> val
+    2019]. Reusa `fixed_temporal_split` (líneas disjuntas + exclusión del holdout
+    por fold), así no se reimplementa el split. Los años sin train anterior se
+    saltean (fold vacío). Devuelve la lista concatenada ``[(train_idx, val_idx)]``.
+    """
+    folds: list[tuple[np.ndarray, np.ndarray]] = []
+    for vy in val_years:
+        folds += fixed_temporal_split(
+            year, line_id, val_year=int(vy), holdout_test_year=holdout_test_year, enforce=enforce
+        )
+    return folds
+
+
 def final_test_split(year, test_year: int) -> tuple[np.ndarray, np.ndarray]:
     """Separa el año de test final (intocable) del resto (dev)."""
     year = np.asarray(year)
