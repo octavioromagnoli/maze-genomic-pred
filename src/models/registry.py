@@ -13,10 +13,12 @@ from src.data.preprocess import build_preprocessor
 from src.models.base import BaseModel
 from src.models.dummy import MeanPredictor
 from src.models.gblup import GBLUP
+from src.models.xgb import XGBoostRegressor
 
 REGISTRY: dict[str, type[BaseModel]] = {
     "mean_predictor": MeanPredictor,
     "gblup": GBLUP,
+    "xgboost": XGBoostRegressor,
 }
 
 class PreprocessedModel(BaseModel):
@@ -41,6 +43,9 @@ class PreprocessedModel(BaseModel):
         self.inner.set_fit_context(**context)
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "PreprocessedModel":
+        if hasattr(self.inner, "fit_with_preprocessor"):
+            self.inner.fit_with_preprocessor(self.pre, X, y)
+            return self
         Xt = self.pre.fit_transform(X)   # fit del preprocesador solo con train
         self.inner.fit(Xt, y)
         return self
