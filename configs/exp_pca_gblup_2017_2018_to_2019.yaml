@@ -1,0 +1,60 @@
+# GBLUP sobre embedding PCA — split temporal FIJO (train 2017+2018 -> val 2019).
+#
+# Reemplaza al expanding para SELECCIONAR la dimensión de PCA: un único fold de
+# scoring (val 2019, el escenario de despliegue = "predecir la campaña siguiente").
+# Se saca de la selección el fold 2017-only (val 2018) porque:
+#   (a) es la cohorte más atípica del dev (EDA: AUC 0.95-0.98) -> estimación
+#       ruidosa y no representativa (bitácora, Decisión a, LOCK), y
+#   (b) con n_train=901 el techo de rango de PCA es ~900: pedir dims altas ahí
+#       degeneraba y rompía el fold (lambda_0 -> 0, RMSE ~1e13).
+# Con el split fijo el train es 2319 (techo ~2318) y queda un solo fold de
+# scoring, así pearson_r_mean del sweep = Pearson de val 2019, limpio. 2020 sellado.
+
+experiment:
+  name: pca_gblup_2017_2018_to_2019
+  description: >
+    GBLUP sobre componentes principales (PCA train-only, regla 1) con split
+    temporal fijo train 2017+2018 -> val 2019. La dimensión latente
+    (preprocess.pca.n_components) es el HP que barre sweep_pca_dim.yaml.
+    2020 queda como holdout intocable.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019             # año a predecir
+  train_years: [2017, 2018]  # train explícito
+  holdout_test_year: 2020    # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+preprocess:
+  standardize: true          # z-score por-SNP con stats de TRAIN, antes del PCA
+  pca:
+    n_components: 512         # <-- dimensión a barrer (la pisa el sweep). 512 = mejor del barrido en val 2019.
+    whiten: false            # GBLUP re-estandariza internamente; whiten es casi redundante
+    svd_solver: full         # determinista
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [gblup, pca, fixed, dev, val2019]
