@@ -537,3 +537,69 @@ interacciones/no-linealidades aporta sobre el modelo lineal mixto en régimen p�
   `max_depth`/`learning_rate`/submuestreo/regularización, no más árboles.
 - Runs de referencia sincronizadas a wandb (`qssy1kot`, `z9wmphtw`). El cierre
   sobre 2020 sigue intocable (regla 3).
+
+## Fase 5 — Autoencoder (compresión no lineal)
+
+El PCA (Fase 3) mostró que la reducción **lineal** no le aporta señal a GBLUP (es
+una rotación; el kernel `G=ZZ'/p` ya usa toda la info). La hipótesis del AE es
+capturar **no-linealidad**: comprimir 4612 SNPs a un latente chico que un modelo
+downstream pueda explotar. El AE no le va a ganar a GBLUP **por sí solo** (GBLUP es
+lineal sobre las features); la apuesta es **AE + modelo no lineal** (XGBoost/NN).
+
+### Qué quedó armado
+- [`src/models/autoencoder.py`](../src/models/autoencoder.py): `SNPAutoencoder` (MLP
+  encoder/decoder simétrico, salida logits + `BCEWithLogitsLoss` = sigmoide+BCE
+  fusionadas, regla 4; latente lineal) y `AutoencoderReducer`, que expone la **misma
+  interfaz que `PCAReducer`** (`fit`/`transform`/`get_fitted_params`) ⇒ entra en la
+  cadena `preprocess:` y lo usa cualquier modelo vía `PreprocessedModel` sin
+  reescribir nada. Train-only (regla 1). HP ricos y todos barribles: profundidad/
+  ancho del encoder, `latent_dim`, activación, dropout, batchnorm, *tied weights*,
+  *denoising* (masking de bits), *sparsity* L1 del latente, optimizador, lr, weight
+  decay, batch size, épocas, paciencia, grad clip, scheduler. Early stopping por BCE
+  de val, **time budget** (`max_train_seconds`, corte por época) y callback de
+  *learning curves* (train/val BCE + accuracy de bits por época).
+- Pipeline: `build_preprocessor` reconoce `preprocess.autoencoder` (excluyente con
+  `pca`; prohíbe `standardize` antes — rompería la binariedad); `PreprocessedModel`
+  y `PreprocChain` propagan el contexto del fold (`line_id`) al reducer para su
+  held-out por línea sin leakage.
+- Entrenamiento: [`src/training/run_ae.py`](../src/training/run_ae.py) +
+  [`scripts/train_ae.py`](../scripts/train_ae.py) (entrypoint **separado** de
+  `train.py`). Recuperación: `best_ae_from_sweep` /
+  `best_ae_hparams_from_sweep` ([`src/training/ae_select.py`](../src/training/ae_select.py)).
+  Persistencia torch: `save_ae_artifact`/`load_ae_artifact`
+  ([`src/training/save_model.py`](../src/training/save_model.py)).
+- Configs: [`exp_ae_2017_to_2018.yaml`](../configs/exp_ae_2017_to_2018.yaml) (base) +
+  [`sweep_ae.yaml`](../configs/sweep_ae.yaml) (bayesiano).
+
+### Decisión de diseño: tunear el compresor por reconstrucción, no por downstream
+El AE se selecciona por **BCE de reconstrucción** (no supervisado), NO por el Pearson
+downstream. Razón: con un solo inner-val, tunear el AE end-to-end contra el Pearson
+le mete tantos grados de libertad al holdout que lo sobreajusta (p≫n, n chico). Así
+el embedding de cada dimensión es **único** (no depende del modelo) ⇒ se genera una
+vez y lo reusan GBLUP/XGBoost/NN. Por eso el AE NO pasa por `run_evaluation`
+(supervisado, por fold): tiene su propio entrypoint. El único entrypoint **supervisado**
+sigue siendo `train.py`; `train_ae.py` es el del compresor.
+
+### Régimen temporal y qué persiste (receta vs pesos)
+Sweep del AE: **train 2017 → val-reconstrucción BCE 2018** (mismo split 2017→2018 que
+GBLUP/XGB usan internamente). 2019 (val externo) y 2020 (sellado) intactos. El AE se
+**re-ajusta train-only en cada nivel** (regla 1): 2017 para elegir la dimensión
+(GBLUP/XGB 2017→2018); 2017+2018 para reportar en 2019; 2017+2018+2019 al cierre. Lo
+que persiste entre niveles es la **receta de HP** (`meta['ae_params']`), no los pesos
+(verificado: `train_years` en `n=901` para 2017, `n=1418` para 2018).
+
+### Dónde quedan los AE y cómo se recuperan
+Cada trial del sweep guarda su AE entrenado en `checkpoints/ae-snp-d<dim>/`
+(`ae.pt` + `meta.json` con HP, métricas y `train_years`) y como wandb Artifact
+`ae-snp-d<dim>` (versionado por trial). El mejor de cada dimensión se trae con
+`best_ae_from_sweep("entity/project/<sweep_id>")` (cruza `val_bce_best` mínimo con su
+Artifact y devuelve el `AutoencoderReducer` listo para `.transform`). Verificado
+end-to-end offline (entrena, loguea curvas, guarda y recupera idéntico, guard
+anti-leakage activo).
+
+### Plan de barrido (pendiente de correr)
+Un sweep bayesiano por dimensión, grilla solapada con la de PCA para comparar
+`AE-d` vs `PCA-d`: **32 / 64 / 128 / 256** (bien por debajo del techo de rango 901;
+el interés está donde el AE no lineal podría ganarle a PCA de la misma dim, no en
+dims altas que ya son *denoising*). Después: selección de dimensión por Pearson de
+GBLUP/XGBoost en inner-val 2018, comparación contra baseline en 2019, cierre en 2020.

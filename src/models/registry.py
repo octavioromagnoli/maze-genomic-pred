@@ -41,6 +41,11 @@ class PreprocessedModel(BaseModel):
         # esto el inner no vería los años y caería a K-fold aleatorio
         super().set_fit_context(**context)
         self.inner.set_fit_context(**context)
+        # También al preprocesador si lo acepta (p.ej. el autoencoder lo usa para
+        # su held-out por línea train-only, sin tocar el val externo del fold).
+        pre_setter = getattr(self.pre, "set_fit_context", None)
+        if callable(pre_setter):
+            pre_setter(**context)
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "PreprocessedModel":
         if hasattr(self.inner, "fit_with_preprocessor"):
