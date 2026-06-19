@@ -385,3 +385,89 @@ interacciones/no-linealidades aporta sobre el modelo lineal mixto en régimen p�
   `max_depth`/`learning_rate`/submuestreo/regularización, no más árboles.
 - Runs de referencia sincronizadas a wandb (`qssy1kot`, `z9wmphtw`). El cierre
   sobre 2020 sigue intocable (regla 3).
+
+## Fase 4 — MLP base (red neuronal)
+
+**Objetivo:** segundo modelo no lineal de la fase base. Un perceptrón multicapa
+(PyTorch) que toma los SNPs crudos como capa de entrada y predice GY con una
+cabeza de regresión lineal, para contrastar una no-linealidad por
+representaciones distribuidas (frente a los árboles de XGBoost y al lineal mixto
+de GBLUP) en régimen p≫n.
+
+### Qué quedó armado
+- **Modelo** [`src/models/mlp.py`](../src/models/mlp.py): `MLPRegressor(BaseModel)`
+  enganchado a la interfaz común (`fit`/`predict`) y al harness de Fase 0.
+  Arquitectura configurable (`_MLPNet`): [dropout de entrada] → bloques
+  `Linear[+BatchNorm]+activación+dropout` → `Linear(1)`. Optimizador Adam con
+  weight decay y pérdida **MSE**. Registrado como `mlp` en
+  [`src/models/registry.py`](../src/models/registry.py).
+- **Config** [`configs/exp_mlp_2017_2018_to_2019.yaml`](../configs/exp_mlp_2017_2018_to_2019.yaml):
+  arquitectura, regularización, optimizador y early stopping por `model.params`,
+  sin tocar código.
+
+### Preprocesamiento train-only dentro del modelo + persistencia torch
+- A diferencia de XGBoost, el MLP **no usa el bloque `preprocess:`/`PreprocessedModel`**:
+  hace su estandarización (z-score de features y del target) **dentro de `fit`**,
+  ajustada solo con el train del fold (regla 1). El motivo es la persistencia:
+  `PreprocessedModel` serializa con joblib (picklearía el `nn.Module`), lo que
+  choca con el contrato del proyecto de que los modelos torch overridean
+  `save`/`load` con `state_dict` + arquitectura. Así todo el preprocesamiento
+  (medias/desvíos de X e y) viaja dentro del checkpoint torch.
+- **`save`/`load` override**: el checkpoint guarda arquitectura (`cfg_`),
+  `state_dict`, escaladores y diagnóstico; `load_model_artifact` lo reconstruye
+  sin reentrenar, con el guard de `train_years` activo.
+
+### Early stopping temporal + refit sobre todo el train (regla 3)
+- Con `params.patience` se reserva el **último año del train** como inner-val
+  (`temporal_inner_split`: train 2017+2018 ⇒ ajusta 2017, monitorea 2018), mismo
+  criterio que XGBoost. Los estadísticos de escala se recomputan con el
+  inner-train (sin leakage en la selección).
+- La selección elige el número de épocas que **maximiza el Pearson de inner-val**
+  (`val_metric: pearson`) y luego, con `refit_full_train: true`, reentrena el
+  modelo final desde cero con todo el train (2017+2018) por las épocas elegidas.
+- **Por qué Pearson y no MSE en la selección**: con p≫n la red sobreajusta desde
+  la primera época, así que el **MSE de inner-val es mínimo en la época 0**
+  (predecir la media) y `val_metric: loss` degeneraría a entrenar ~1 época. El
+  Pearson —la métrica de portada (regla 5)— sigue mejorando unas épocas y elige
+  un punto útil. El default de código queda en `loss` (convención segura,
+  no-NaN); el experimento usa `pearson` con esa justificación.
+
+### Decisiones de diseño
+- **MSE, no BCE**: la regla 4 (BCE) aplica al autoencoder que reconstruye SNPs
+  binarios; acá la salida es un fenotipo continuo.
+- **Reproducibilidad**: `random_state` siembra el RNG de torch dentro de `fit`
+  (la seed global no fija la inicialización de pesos por fold). Verificado: dos
+  ajustes con la misma seed dan predicción idéntica. El historial por época queda
+  en `self.history_` (el harness no propaga un hook por época; los escalares de
+  diagnóstico van por `get_fitted_params`).
+
+### Verificación
+- **Smoke test sintético** (`build_model` + `set_fit_context`): registry, early
+  stopping con ≥2 años (selecciona épocas, refittea) y su desactivación con 1
+  año, save/load con round-trip exacto de la predicción, y reproducibilidad por
+  seed.
+- **End-to-end sobre datos reales** vía `scripts/train.py` (wandb offline,
+  bootstrap, resumen, copia local + Artifact `mlp-2017-2018-to-2019`); el
+  Artifact recarga vía `load_model_artifact` y el guard de `train_years` rechaza
+  su reutilización bajo un régimen incompatible.
+
+### Corrida de referencia (`GY/optimal`, train 2017–2018 `n=2319`, val 2019 `n=722`, 2020 holdout)
+- Arquitectura `[128]` (1 capa oculta, 590 593 parámetros), `dropout=0.5`,
+  `input_dropout=0.3`, `lr=5e-4`, `weight_decay=1e-3`, `batch_size=64`,
+  `max_epochs=200`, `patience=25`, selección por Pearson.
+- El early stopping eligió **6 épocas** (`best_epoch=5`; Pearson de inner-val
+  2018 `0.366`) y refitteó sobre todo el train. Pearson `0.2908` IC95%
+  `[0.2268, 0.3585]`, RMSE `1.2640` IC95% `[1.2019, 1.3195]`, R² `−0.5695`
+  IC95% `[−0.7395, −0.4114]`. *(Corrida offline; sincronizar con `wandb sync`
+  para el link.)*
+- **Baseline nulo (predictor de media 2017+2018 sobre 2019)**: Pearson **`nan`**
+  (predicción constante ⇒ varianza cero ⇒ Pearson indefinido), RMSE `1.3414`,
+  R² `−0.7677`. El MLP le gana claramente en RMSE (`1.2640 < 1.3414`) y aporta
+  el ranking que el predictor de media no tiene.
+- **Lectura comparada** (mismo split): el MLP da el **mejor RMSE y el R² menos
+  negativo** de los modelos base, y un Pearson `0.291` que se ubica por **encima
+  de XGBoost** (`0.216`, árboles fijos) y apenas por **debajo de GBLUP-REML**
+  (`0.3145`), con ICs solapados (`[0.227, 0.359]` vs `[0.247, 0.380]`). La
+  no-linealidad por red no supera al lineal mixto en este p≫n, pero queda a la
+  par y mejora la calibración (RMSE/R²). El cierre sobre 2020 sigue intocable
+  (regla 3).

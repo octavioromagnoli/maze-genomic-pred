@@ -13,12 +13,14 @@ from src.data.preprocess import SNPPreprocessor, build_preprocessor
 from src.models.base import BaseModel
 from src.models.dummy import MeanPredictor
 from src.models.gblup import GBLUP
+from src.models.mlp import MLPRegressor
 from src.models.xgb import XGBoostRegressor
 
 REGISTRY: dict[str, type[BaseModel]] = {
     "mean_predictor": MeanPredictor,
     "gblup": GBLUP,
     "xgboost": XGBoostRegressor,
+    "mlp": MLPRegressor,
 }
 
 class PreprocessedModel(BaseModel):
