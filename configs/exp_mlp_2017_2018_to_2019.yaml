@@ -1,0 +1,74 @@
+# MLP (PyTorch) — train 2017+2018 -> predecir 2019 sobre GY (dev, NO toca el holdout 2020).
+# Red neuronal baseline: features crudas -> capas ocultas -> cabeza de regresion lineal.
+# Selecciona el numero de epocas con early stopping temporal interno (2017 -> 2018)
+# y reentrena el final con 2017+2018.
+
+experiment:
+  name: mlp_2017_2018_to_2019
+  description: >
+    MLP (perceptron multicapa, PyTorch) entrenado con 2017+2018 y evaluado sobre
+    2019 para el target GY en ambiente optimo. Toma los marcadores crudos como
+    entrada (estandarizados train-only dentro del modelo) y predice GY con una
+    cabeza de regresion lineal (perdida MSE). Selecciona el numero de epocas con
+    early stopping temporal interno (2017 -> 2018) y luego reentrena con todo
+    2017+2018. 2020 queda como holdout intocable.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019            # ano a predecir
+  train_years: [2017, 2018] # train explicito
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# OJO: este modelo hace su estandarizacion train-only DENTRO de fit (regla 1) y
+# overridea save/load (state_dict + arquitectura). No se usa el bloque
+# `preprocess:` para que el checkpoint torch round-trippee correctamente.
+
+model:
+  name: mlp
+  params:
+    hidden_dims: [128]          # una capa oculta (baseline). Lista para mas capas.
+    dropout: 0.5                # dropout tras la capa oculta
+    input_dropout: 0.3          # dropout sobre la entrada (regulariza p >> n)
+    activation: relu
+    batchnorm: false
+    lr: 0.0005
+    weight_decay: 0.001         # L2 (regularizacion adicional)
+    batch_size: 64
+    max_epochs: 200             # tope para la seleccion interna
+    patience: 25                # early stopping con inner-val temporal 2017 -> 2018
+    eval_scheme: temporal
+    refit_full_train: true      # modelo final con 2017+2018 y epocas seleccionadas
+    # Seleccion por pearson (metrica de portada, regla 5): con p >> n la red
+    # overfittea desde la epoca 1, asi que el MSE de inner-val es minimo en la
+    # epoca 0 (predecir la media) y val_metric=loss degeneraria a entrenar ~1
+    # epoca. Pearson sigue mejorando unas epocas y elige un punto util.
+    val_metric: pearson         # "loss" (MSE inner-val) | "pearson"
+    standardize_inputs: true    # z-score de features train-only (dentro del modelo)
+    standardize_target: true    # z-score del target train-only
+    random_state: 575           # seed del RNG de torch (init de pesos)
+    device: cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: mlp-2017-2018-to-2019
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [mlp, nn, pytorch, dev, train2017-2018, val2019, GY, optimal]
