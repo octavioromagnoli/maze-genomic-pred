@@ -24,7 +24,7 @@ method: bayes
 run_cap: 200
 
 metric:
-  name: sweep_ae_d32
+  name: val_bce_best
   goal: minimize
 
 early_terminate:

@@ -1,0 +1,78 @@
+# Sweep BAYESIANO de los hiperparámetros de XGBoost, a COMPRESOR FIJO.
+# SELECCIÓN HONESTA: train 2017 -> val 2018 (clavado en el config base). Se elige
+# sobre 2018 sin tocar 2019 -> sin winner's curse sobre el set de reporte. El reporte
+# final (train 2017+2018 -> val 2019) y 2020 (sellado) son pasos posteriores.
+#
+# El compresor (AE-d o PCA-d) vive en el config BASE; este sweep barre SOLO los HP de
+# XGBoost (model.params.*). REUTILIZACIÓN: para otra dimensión u otro compresor
+# cambiás UNA línea -> el `--config` del bloque `command` (y el `name` de arriba).
+# Configs base disponibles:
+#   AE:  configs/exp_xgb_ae_d{32,64,128,256}_2017_to_2018.yaml
+#   PCA: configs/exp_xgb_pca_2017_to_2018.yaml   (la dim se fija en ese YAML)
+#
+# Métrica: pearson_r_mean (Pearson de val 2018, regla 5), MAXIMIZAR. train.py la deja
+# en run.summary, que es lo que lee el controller. NO poner cv.* ni data.* acá
+# (reglas 2 y 3). OJO: 2018 (train 2017) es la cohorte más atípica/ruidosa del dev
+# (bitácora): selección honesta pero con señal ruidosa; por eso el IC importa.
+#
+# n_estimators SÍ se barre: con un solo año de train (2017) no hay inner-split
+# temporal, así que XGBoost no puede early-stoppear -> el número de árboles es un HP.
+#
+# Uso (uno por dimensión/compresor):
+#   wandb login                                   # una vez (controller online)
+#   wandb sweep configs/sweep_xgb.yaml            # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent <entity>/<project>/<sweep_id>   # dentro de tmux
+#
+# Costo: run_cap acota los trials. Con un AE, CADA trial re-entrena el AE train-only
+# en 2017 (~10 s/fit en GPU; UNA vez por trial, sin early stopping); bajá run_cap para
+# un primer pase. Con PCA no hay compresor caro que reentrenar.
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_xgb_ae_d64           # <-- cambialo junto con el --config de abajo
+program: scripts/train.py
+method: bayes
+run_cap: 60
+
+metric:
+  name: pearson_r_mean
+  goal: maximize
+
+parameters:
+  model.params.n_estimators:
+    distribution: int_uniform
+    min: 50
+    max: 1200
+  model.params.max_depth:
+    values: [2, 3, 4, 5, 6]
+  model.params.learning_rate:
+    distribution: log_uniform_values
+    min: 0.005
+    max: 0.3
+  model.params.subsample:
+    distribution: uniform
+    min: 0.5
+    max: 1.0
+  model.params.colsample_bytree:
+    distribution: uniform
+    min: 0.3
+    max: 1.0
+  model.params.reg_lambda:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 10.0
+  model.params.reg_alpha:
+    values: [0.0, 0.001, 0.01, 0.1, 1.0]
+  model.params.min_child_weight:
+    values: [1, 3, 5, 10]
+  model.params.gamma:
+    values: [0.0, 0.1, 0.5, 1.0]
+
+# --config fijo (sin ${args}): argparse de train.py solo ve --config y los HP
+# barridos llegan por wandb.config (merge dot-notation en train.py).
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_xgb_ae_d64_2017_to_2018.yaml         # <-- cambiá dim/compresor acá

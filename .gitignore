@@ -191,6 +191,7 @@ cython_debug/
 /data/
 /experiments/
 /wandb/
+/artifacts/
 /checkpoints/
 /outputs/
 /results/

@@ -23,8 +23,9 @@ def _best_run(sweep, metric: str, minimize: bool):
         if val is None:
             continue
         val = float(val)
-        better = (val < best_val) if minimize else (val > best_val)
-        if best_val is None or better:
+        # El chequeo `best_val is None` corta antes de comparar (en el 1er run no
+        # hay con qué comparar todavía); evaluar la comparación acá rompería.
+        if best_val is None or (val < best_val if minimize else val > best_val):
             best_val, best_run = val, run
     if best_run is None:
         raise ValueError(
