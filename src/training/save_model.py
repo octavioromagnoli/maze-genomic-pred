@@ -130,6 +130,99 @@ def save_model_artifact(
     return base
 
 
+_AE_FILE = "ae.pt"
+
+
+def save_ae_artifact(
+    reducer: Any,
+    *,
+    name: str,
+    train_years: Any,
+    target: str,
+    env: str | None,
+    seed: int,
+    metrics: dict[str, Any] | None = None,
+    extra_meta: dict[str, Any] | None = None,
+    run: Any | None = None,
+    aliases: tuple[str, ...] = ("latest",),
+    checkpoints_dir: str | Path | None = None,
+) -> Path:
+    """Guarda un `AutoencoderReducer` entrenado: checkpoint local + wandb Artifact.
+
+    El AE es un preprocesador (no está en el REGISTRY de modelos), así que tiene su
+    propio formato torch (``ae.pt`` vía ``reducer.save``). `train_years` ata el AE a
+    su régimen de train (clave anti-leakage; el embedding se ajustó SOLO con esos
+    años). La metadata guarda los HP del AE + las métricas de reconstrucción para
+    inspeccionar sin bajar el modelo. Devuelve el directorio local del AE.
+    """
+    base = (Path(checkpoints_dir) if checkpoints_dir is not None else _default_checkpoints_dir()) / name
+    base.mkdir(parents=True, exist_ok=True)
+    reducer.save(base / _AE_FILE)
+
+    meta: dict[str, Any] = {
+        "artifact_kind": "autoencoder",
+        "target": target,
+        "env": env,
+        "train_years": _normalize_years(train_years),
+        "seed": int(seed),
+        "ae_params": getattr(reducer, "params", {}),
+    }
+    if metrics:
+        meta["metrics"] = {
+            k: (float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
+            for k, v in metrics.items()
+            if v is not None
+        }
+    if extra_meta:
+        meta.update(extra_meta)
+    (base / _META_FILE).write_text(json.dumps(meta, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+
+    if run is not None and hasattr(run, "log_artifact"):
+        import wandb
+
+        art = wandb.Artifact(name=name, type="autoencoder", metadata=meta)
+        art.add_dir(str(base))
+        run.log_artifact(art, aliases=list(aliases))
+
+    return base
+
+
+def load_ae_artifact(
+    ref: str | Path,
+    *,
+    expected_train_years: Any | None = None,
+    run: Any | None = None,
+    checkpoints_dir: str | Path | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    """Carga un AE guardado con `save_ae_artifact`. Devuelve ``(reducer, meta)``.
+
+    Como en `load_model_artifact`, si se pasa `expected_train_years` verifica que
+    coincidan con los del artifact (anti-leakage: un AE entrenado con otros años
+    proyectaría datos que el fold no debe ver). `ref` puede ser un dir local, un
+    nombre bajo checkpoints/, o ``name:alias`` con un run de wandb activo.
+    """
+    from src.models.autoencoder import AutoencoderReducer
+
+    base = _resolve_model_dir(ref, run, checkpoints_dir)
+    meta_path = base / _META_FILE
+    if not meta_path.exists():
+        raise FileNotFoundError(f"Falta {_META_FILE} en {base}; ¿se guardó con save_ae_artifact?")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    if expected_train_years is not None:
+        got = _normalize_years(meta.get("train_years", []))
+        exp = _normalize_years(expected_train_years)
+        if got != exp:
+            raise LeakageError(
+                f"El AE '{ref}' se entrenó con train_years={got} pero el fold actual "
+                f"entrena con {exp}. Reusarlo metería leakage (reglas #1/#3). "
+                "Reentrená el AE para este split (mismos HP, otro train)."
+            )
+
+    reducer = AutoencoderReducer.load(base / _AE_FILE)
+    return reducer, meta
+
+
 def _resolve_model_dir(ref: str | Path, run: Any | None, checkpoints_dir: str | Path | None) -> Path:
     """Resuelve `ref` a un directorio local con ``model.bin`` + ``meta.json``.
 

@@ -1,0 +1,79 @@
+# Sweep BAYESIANO de los hiperparámetros del autoencoder, a dimensión latente FIJA.
+# Métrica: val_bce_best (BCE de reconstrucción en 2018), MINIMIZAR. Un sweep por
+# dimensión: corré este sweep para d=64, después cambiá latent_dim y corré otro.
+#
+# Uso (uno por dimensión):
+#   wandb login                                    # una vez (el controller es online)
+#   wandb sweep configs/sweep_ae.yaml              # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   
+#
+# Para otra dimensión: cambiá el `value` de preprocess.autoencoder.latent_dim acá
+#  El Artifact se nombra solo ("ae-snp-d<dim>", porque artifacts.name queda null en el config base).
+#
+# Que el sweep TERMINE (pedido explícito): cota doble ->
+#   - run_cap: 40              acota el total de trials.
+#   - max_train_seconds: 1200  (en el config base) acota CADA trial.
+#   - early_terminate hyperband poda temprano los trials que reconstruyen mal.
+# Cota superior de tiempo ~ run_cap * max_train_seconds (menos lo podado).
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_ae_d64
+program: scripts/train_ae.py
+method: bayes
+run_cap: 200
+
+metric:
+  name: val_bce_best
+  goal: minimize
+
+early_terminate:
+  type: hyperband
+  min_iter: 30          # épocas antes de la primera poda
+  eta: 3
+
+parameters:
+  # --- dimensión latente: CONSTANTE (un sweep por dimensión) ---
+  preprocess.autoencoder.latent_dim:
+    value: 64
+  # --- optimización ---
+  preprocess.autoencoder.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.003
+  preprocess.autoencoder.weight_decay:
+    values: [0.0, 0.000001, 0.00001, 0.0001, 0.001]
+  preprocess.autoencoder.batch_size:
+    values: [64, 128, 256]
+  preprocess.autoencoder.lr_scheduler:
+    values: [none, cosine, plateau]
+  # --- arquitectura ---
+  preprocess.autoencoder.encoder_hidden:
+    values: [[2048, 512], [1024, 256], [2048, 1024, 256], [1024], [512]]
+  preprocess.autoencoder.activation:
+    values: [relu, gelu, leaky_relu, elu, tanh]
+  preprocess.autoencoder.batchnorm:
+    values: [true, false]
+  preprocess.autoencoder.tie_weights:
+    values: [true, false]
+  # --- regularización ---
+  preprocess.autoencoder.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  preprocess.autoencoder.denoising_p:
+    distribution: uniform
+    min: 0.0
+    max: 0.3
+  preprocess.autoencoder.l1_latent:
+    values: [0.0, 0.00001, 0.0001, 0.001]
+
+# Como en sweep_pca_dim.yaml: --config fijo y SIN ${args}, así argparse de
+# train_ae.py solo ve --config y los HP barridos llegan por wandb.config (merge
+# con notación punto). cv.* y data.* quedan CLAVADOS en el config base.
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_ae_2017_to_2018.yaml

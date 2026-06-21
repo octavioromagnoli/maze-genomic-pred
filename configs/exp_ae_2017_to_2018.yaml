@@ -1,0 +1,78 @@
+# Autoencoder de SNPs — entrena con 2017, valida reconstrucción (BCE) en 2018.
+#
+# Tunea el COMPRESOR no supervisado (no la métrica downstream): el sweep bayesiano
+# (configs/sweep_ae.yaml) busca los HP del AE que MEJOR reconstruyen 2018 a una
+# dimensión latente fija. La selección de la DIMENSIÓN y la comparación contra el
+# baseline son aguas abajo (GBLUP/XGBoost sobre el embedding, scripts/train.py).
+#
+# Régimen temporal (reglas 1 y 3): train = 2017, val de reconstrucción = 2018 (el
+# mismo split 2017->2018 que usan GBLUP/XGB para su selección interna). 2019 (val
+# externo del downstream) y 2020 (test sellado) NO se tocan.
+#
+# Uso:
+#   python scripts/train_ae.py --config configs/exp_ae_2017_to_2018.yaml
+
+experiment:
+  name: ae_snp_2017_to_2018_d64
+  description: >
+    Autoencoder MLP de SNPs binarios (salida sigmoide + BCE, regla 4) entrenado
+    con la campaña 2017 y validado por reconstrucción sobre 2018. La dimensión
+    latente queda fija por corrida (un sweep de HP por dimensión); el resto de los
+    hiperparámetros los barre sweep_ae.yaml. 2019/2020 intactos.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY            # el AE no usa el target; define qué observaciones se cargan
+  env: optimal
+
+cv:
+  train_years: [2017]      # años con que se entrena el AE (train-only, regla 1)
+  val_scheme: temporal     # temporal (BCE en val_year) | holdout_lines (held-out por línea)
+  val_year: 2018           # año de reconstrucción para early stopping / learning curves
+  holdout_test_year: 2020  # sellado: nunca entra
+
+# El AE es el compresor de la cadena preprocess (excluyente con pca). Consume SNPs
+# binarios crudos {0,1} (sin standardize: lo hace después GBLUP). Todos estos HP
+# son barribles por el sweep vía notación punto preprocess.autoencoder.<hp>.
+preprocess:
+  autoencoder:
+    # --- arquitectura ---
+    latent_dim: 64               # <-- dimensión a fijar por sweep (32/64/128/256...)
+    encoder_hidden: [2048, 512]  # capas del encoder (decoder espejo)
+    activation: relu             # relu | gelu | leaky_relu | elu | tanh
+    dropout: 0.0
+    batchnorm: false
+    tie_weights: false           # decoder = transpuesta del encoder (regulariza)
+    # --- regularización ---
+    denoising_p: 0.0             # masking de bits de entrada (denoising AE)
+    l1_latent: 0.0               # sparsity L1 sobre el latente (sparse AE)
+    weight_decay: 0.0            # L2 del optimizador
+    # --- optimización ---
+    optimizer: adamw             # adam | adamw | sgd
+    lr: 0.001
+    batch_size: 128
+    max_epochs: 300
+    patience: 30                 # early stopping por val BCE
+    min_delta: 0.0001
+    grad_clip: 0.0               # 0 = sin clipping
+    lr_scheduler: none           # none | cosine | plateau
+    # --- validación interna (solo si val_scheme=holdout_lines) ---
+    val_frac: 0.1                # fracción de LÍNEAS held-out (regla 2)
+    # --- runtime ---
+    device: cuda                 # null -> cuda si hay, si no cpu
+    max_train_seconds: 180       # red de seguridad por trial (en GPU un trial real tarda ~5-13s)
+    verbose: false
+
+artifacts:
+  save_model: true               # guarda el AE entrenado (checkpoint local + wandb Artifact)
+  name: null                     # null -> se deriva "ae-snp-d<latent_dim>" (sigue a la dim sola)
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online                 # el agente del sweep lo pone online (WANDB_MODE=online)
+  tags: [autoencoder, ae, snp, recon, train2017, val2018, d64]

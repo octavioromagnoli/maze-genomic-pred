@@ -311,6 +311,158 @@ base (Lopez-Cruz et al.), forma *hat matrix*:
   (Enfoque B). Corridas ejecutadas en modo wandb offline. El cierre sobre 2020
   sigue pendiente y requiere reentrenar sobre todo el dev 2017–2019.
 
+## Fase 3 — Reducción de dimensionalidad (PCA) + GBLUP
+
+**Objetivo:** ver si comprimir los 4612 SNPs con PCA (train-only) antes de GBLUP
+mejora la predicción, eligiendo la dimensión latente por **desempeño downstream**
+(Pearson en val 2019), no por % de varianza. Es además el **baseline lineal**
+contra el AE no lineal (Fase siguiente).
+
+### Infra
+- `PCAReducer` ([`src/data/preprocess.py`](../src/data/preprocess.py)): envuelve
+  `sklearn.PCA`, ajustado SOLO con el train del fold (regla 1), encadenado después
+  de `SNPPreprocessor(standardize=True)` (z-score por-SNP con stats de train) vía
+  `PreprocChain`. Se activa con el sub-bloque `preprocess.pca` del config;
+  `build_model` lo envuelve en `PreprocessedModel`. Loguea `pca_n_components` y
+  `pca_cum_var_explained` por fold.
+- Sweep [`configs/sweep_pca_dim.yaml`](../configs/sweep_pca_dim.yaml) (grid sobre
+  `preprocess.pca.n_components`).
+
+### Trampa p≫n: el techo de rango (por qué el primer sweep estaba roto)
+El primer barrido probó dims altas `[900..1200]` y dio un resultado engañoso:
+- En p≫n el nº de componentes con varianza > 0 está acotado por `min(n_train−1, p)`,
+  **NO por p**. El fold más chico del expanding (train 2017 → val 2018) tiene
+  n_train=901 ⇒ techo ~900 componentes, no 4612. `PCAReducer` clampa a
+  `min(n_components, min(n, p))` (`preprocess.py:103`).
+- Pedir `n_components ≥ n_train` no reduce nada (`pca_cum_var_explained → 1.0`) y
+  mete una componente degenerada de varianza ~0; GBLUP la re-estandariza
+  internamente (divide por ~0) ⇒ `G_TS` casi-singular, REML manda `λ₀ → 0` y la
+  predicción **explota** (RMSE ~1.3e13, R² ~−1e26 en val 2018). Reproducible para
+  todo `n_components ≥ 950` (clampados a 901); a 900 todavía andaba (`λ₀≈680`).
+- **GBLUP es ~invariante a PCA sin truncar:** PCA es una rotación ortogonal y
+  `G = ZZ'/p` se preserva bajo rotación; recién al truncar fuerte cambia. Por eso a
+  dims altas (~900–1200 ≈ sin reducción) el Pearson de val 2019 quedaba clavado en
+  ~0.31–0.34 ≈ el GBLUP sin PCA (0.3145): no medía nada.
+
+**Corrección:** barrer dims BAJAS `[16, 32, 64, 128, 256, 512]`, bien por debajo de
+901, donde el truncamiento es real; y mover la selección al split FIJO.
+
+### Selección sobre split fijo, no expanding
+El expanding metía como fold de scoring el train-2017-only (val 2018), que es (a) la
+cohorte más atípica del dev (EDA, AUC 0.95–0.98) ⇒ ruidosa y no representativa (ya
+rechazada en la Decisión (a) de Fase 1), y (b) la del techo de rango 901 que rompía
+PCA. Su Pearson saltaba sin patrón (0.22→0.38→0.23 según la dim) y, promediado en
+`pearson_r_mean`, **falseaba la selección** (coronaba dim=128, que en el fold que
+importa —2019— es peor que 512). ⇒ Config nuevo
+[`configs/exp_pca_gblup_2017_2018_to_2019.yaml`](../configs/exp_pca_gblup_2017_2018_to_2019.yaml):
+split fijo train 2017+2018 → val 2019 (un único fold de scoring), al que ahora
+apunta el sweep. Así `pearson_r_mean` = Pearson de val 2019 limpio. 2020 sellado.
+
+### Resultados del barrido (split fijo, GY/optimal, train 2017+2018 → val 2019, n=722)
+Sweep [`9phyqmc8`](https://wandb.ai/oromagnoli-/maze-genomic-pred/sweeps/9phyqmc8)
+(corrido en expanding; el fold val-2019 = el split fijo); reproducido offline con
+seed 575 vía `run_evaluation`.
+
+| n_comp | cum_var | Pearson | RMSE | R² | λ₀ |
+|-------:|--------:|--------:|-----:|---:|---:|
+| 16  | 0.387 | 0.2161 | 1.2429 | −0.518 | 0.79 |
+| 32  | 0.480 | 0.2385 | 1.2440 | −0.520 | 0.70 |
+| 64  | 0.578 | 0.2488 | 1.2756 | −0.599 | 0.63 |
+| 128 | 0.679 | 0.2454 | 1.3119 | −0.691 | 0.55 |
+| 256 | 0.779 | 0.2577 | 1.2879 | −0.630 | 0.46 |
+| **512** | 0.876 | **0.2991** | 1.2997 | −0.660 | 0.41 |
+| **sin PCA (4612)** | 1.000 | **0.3145** | 1.3016 | −0.664 | 0.69 |
+
+- El Pearson sube ~monótonamente con la dim y el máximo es **no reducir** (0.3145):
+  todas las dims de PCA quedan por debajo del baseline ⇒ **la reducción lineal no le
+  aporta señal a GBLUP, se la cuesta** (coherente con la rotación-invarianza y con el
+  EDA: *"PCA muy difusa → anticipa el AE no lineal"*).
+- En RMSE el orden casi se invierte (dims bajas levemente mejores: 16 → 1.2429 vs
+  1.3016), pero la métrica de portada es Pearson (regla 5) ⇒ gana el baseline.
+
+### Head-to-head: PCA-512 (mejor) vs sin PCA
+Vía [`notebooks/comparar_modelos_ci.ipynb`](../notebooks/comparar_modelos_ci.ipynb)
+(offline, n_boot=2000, seed 575). Figuras en `experiments/figs/`.
+
+| modelo | Pearson [IC95%] | RMSE [IC95%] | R² [IC95%] |
+|---|---|---|---|
+| sin PCA | 0.3145 [0.246, 0.378] | 1.3016 [1.240, 1.363] | −0.664 [−0.874, −0.490] |
+| PCA-512 | 0.2991 [0.230, 0.363] | 1.2997 [1.236, 1.361] | −0.660 [−0.874, −0.486] |
+
+- **Bootstrap PAREADO de ΔPearson** (sin PCA − PCA-512, mismo resample de líneas):
+  Δ=**0.0154**, IC95% **[−0.007, 0.036]**, P(Δ>0)=0.92 ⇒ **diferencia NO
+  significativa**. PCA-512 es estadísticamente indistinguible del baseline:
+  comprimir 4612→512 no cuesta nada medible, pero tampoco gana. Para mejorar hay que
+  cambiar de **modelo** (capturar no-linealidad), no de embedding lineal.
+
+### Re-barrido a dims altas (950–1100): cuidado con el winner's curse
+Un segundo sweep
+([`ziu59tim`](https://wandb.ai/oromagnoli-/maze-genomic-pred/sweeps/ziu59tim))
+sobre dims altas `[950, 1000, 1010, 1040, 1050, 1100]` (split fijo) parece dar
+**mejor** que el baseline: el ganador es **dim 1000 → Pearson 0.3402** vs 0.3145.
+Hay que leerlo con cuidado:
+
+| dim | 950 | 1000 | 1010 | 1040 | 1050 | 1100 |
+|---|---|---|---|---|---|---|
+| Pearson | 0.323 | **0.340** | 0.333 | 0.322 | 0.325 | 0.335 |
+| cum_var | 0.951 | 0.957 | 0.958 | 0.960 | 0.961 | 0.966 |
+
+- **No es reducción, es denoising de la cola.** `cum_var(1000)=0.957` ⇒ PCA-1000 ≈
+  GBLUP completo menos el ~4 % de varianza más baja. Es la misma **meseta de
+  rotación-invarianza** (0.32–0.34) de los dims altos; truncar la cola de baja
+  varianza actúa como una regularización extra sobre la λ₀ de GBLUP.
+- **Selección sobre val 2019 = post-selección (winner's curse).** El "mejor" (1000)
+  le gana a 1010/1040 por ruido (no monotónico; cambiar la dim en 10 mueve el
+  Pearson 0.007). En bootstrap de val, 1000 es el máximo en 77 % de las réplicas y
+  1100 en 22 % ⇒ "algún dim alto gana" es robusto en val 2019, pero *cuál* es ruido.
+- **El test pareado, sin embargo, no es nulo.** ΔPearson (baseline − PCA-1000) sobre
+  el MISMO resample de líneas = **−0.0255**, IC95% **[−0.049, −0.0025]**,
+  P(baseline>PCA-1000)=0.016 ⇒ en val 2019 PCA-1000 es paired-significativamente
+  mejor (a diferencia de PCA-512, que no lo era). El efecto es chico (~0.026) pero
+  consistente bajo remuestreo.
+- **Lectura honesta:** es una **hipótesis de denoising por truncado de PCA**,
+  plausiblemente real en parte, pero **inflada por selección** (se eligió la dim
+  maximizando el mismo val 2019 contra el que se testea) y medida sobre el único
+  holdout de dev. No se puede bankear desde dev: la adjudicación limpia es **2020
+  sellado**. Para el informe: PCA **no "vence" a GBLUP de forma robusta**; la métrica
+  seleccionada sobre val sobreestima, y de fondo sigue siendo ≈ GBLUP completo.
+
+### Cómo traer el mejor modelo del sweep (infra)
+[`src/training/sweep.py`](../src/training/sweep.py): `best_run_from_sweep` (busca el
+trial que optimiza `metric` del sweep en `run.summary`) y `best_config_from_sweep`
+(aplica sus overrides dot-notation sobre el config base, mismo merge que
+`train.py`). Como GBLUP es determinista, el "mejor modelo" se **re-fittea** del
+config + seed (bit-a-bit igual a la corrida del sweep); no hace falta bajar pickle.
+`comparar_modelos_ci.ipynb` lo usa para comparar baseline vs el mejor del sweep, con
+un **test pareado** de la diferencia (las muestras bootstrap de los dos modelos
+comparten seed+grupo ⇒ restarlas es un bootstrap pareado válido). Para modelos
+caros/estocásticos (NN/AE) el camino es `artifacts.save_model: true` + bajar el
+Artifact con `load_model_artifact` (chequea `train_years`, anti-leakage).
+
+### Notas de auditoría (bootstrap + notebook)
+- `bootstrap_ci` (percentil, cluster a nivel línea, `metrics.py`) está **correcto**.
+  **Pero** en GY/optimal cada línea aparece una sola vez en val (722 líneas = 722
+  obs) ⇒ el cluster bootstrap **degenera a bootstrap de filas** (verificado: K==n).
+  El clustering por línea recién muerde con `env=None` (apila optimal+drought, 2
+  obs/línea).
+- El bootstrap mantiene las predicciones **fijas** y resamplea solo el set de val ⇒
+  el IC refleja variabilidad de muestreo de la métrica en val, no del entrenamiento.
+  Es la interpretación estándar y correcta para "IC del Pearson de validación".
+- Para comparar dos modelos no alcanza con ver si sus IC marginales se solapan: se
+  necesita el bootstrap **pareado** de la diferencia (agregado en el head-to-head).
+  El notebook toma `per_fold[-1]` (ok con split fijo; sería un footgun si se le pasa
+  un config expanding con folds de `report`).
+
+### Corridas de referencia
+- Sweep dims bajas → split fijo:
+  [`sweep_pca_dim.yaml`](../configs/sweep_pca_dim.yaml) →
+  `exp_pca_gblup_2017_2018_to_2019.yaml`
+  ([`9phyqmc8`](https://wandb.ai/oromagnoli-/maze-genomic-pred/sweeps/9phyqmc8)). El
+  primer sweep `[900..1200]`
+  ([`wso0ujai`](https://wandb.ai/oromagnoli-/maze-genomic-pred/sweeps/wso0ujai))
+  queda como contraejemplo del techo de rango (**no usar**).
+- Baseline sin PCA: GBLUP-REML de Fase 2 (0.3145).
+
 ## Fase 4 — XGBoost base
 
 **Objetivo:** primer modelo no lineal sobre los SNPs. Gradient boosting de árboles
@@ -385,7 +537,8 @@ interacciones/no-linealidades aporta sobre el modelo lineal mixto en régimen p�
   `max_depth`/`learning_rate`/submuestreo/regularización, no más árboles.
 - Runs de referencia sincronizadas a wandb (`qssy1kot`, `z9wmphtw`). El cierre
   sobre 2020 sigue intocable (regla 3).
-
+  
+=======
 ## Fase 4 — MLP base (red neuronal)
 
 **Objetivo:** segundo modelo no lineal de la fase base. Un perceptrón multicapa
@@ -471,3 +624,69 @@ de GBLUP) en régimen p≫n.
   no-linealidad por red no supera al lineal mixto en este p≫n, pero queda a la
   par y mejora la calibración (RMSE/R²). El cierre sobre 2020 sigue intocable
   (regla 3).
+ 
+## Fase 5 — Autoencoder (compresión no lineal)
+
+El PCA (Fase 3) mostró que la reducción **lineal** no le aporta señal a GBLUP (es
+una rotación; el kernel `G=ZZ'/p` ya usa toda la info). La hipótesis del AE es
+capturar **no-linealidad**: comprimir 4612 SNPs a un latente chico que un modelo
+downstream pueda explotar. El AE no le va a ganar a GBLUP **por sí solo** (GBLUP es
+lineal sobre las features); la apuesta es **AE + modelo no lineal** (XGBoost/NN).
+
+### Qué quedó armado
+- [`src/models/autoencoder.py`](../src/models/autoencoder.py): `SNPAutoencoder` (MLP
+  encoder/decoder simétrico, salida logits + `BCEWithLogitsLoss` = sigmoide+BCE
+  fusionadas, regla 4; latente lineal) y `AutoencoderReducer`, que expone la **misma
+  interfaz que `PCAReducer`** (`fit`/`transform`/`get_fitted_params`) ⇒ entra en la
+  cadena `preprocess:` y lo usa cualquier modelo vía `PreprocessedModel` sin
+  reescribir nada. Train-only (regla 1). HP ricos y todos barribles: profundidad/
+  ancho del encoder, `latent_dim`, activación, dropout, batchnorm, *tied weights*,
+  *denoising* (masking de bits), *sparsity* L1 del latente, optimizador, lr, weight
+  decay, batch size, épocas, paciencia, grad clip, scheduler. Early stopping por BCE
+  de val, **time budget** (`max_train_seconds`, corte por época) y callback de
+  *learning curves* (train/val BCE + accuracy de bits por época).
+- Pipeline: `build_preprocessor` reconoce `preprocess.autoencoder` (excluyente con
+  `pca`; prohíbe `standardize` antes — rompería la binariedad); `PreprocessedModel`
+  y `PreprocChain` propagan el contexto del fold (`line_id`) al reducer para su
+  held-out por línea sin leakage.
+- Entrenamiento: [`src/training/run_ae.py`](../src/training/run_ae.py) +
+  [`scripts/train_ae.py`](../scripts/train_ae.py) (entrypoint **separado** de
+  `train.py`). Recuperación: `best_ae_from_sweep` /
+  `best_ae_hparams_from_sweep` ([`src/training/ae_select.py`](../src/training/ae_select.py)).
+  Persistencia torch: `save_ae_artifact`/`load_ae_artifact`
+  ([`src/training/save_model.py`](../src/training/save_model.py)).
+- Configs: [`exp_ae_2017_to_2018.yaml`](../configs/exp_ae_2017_to_2018.yaml) (base) +
+  [`sweep_ae.yaml`](../configs/sweep_ae.yaml) (bayesiano).
+
+### Decisión de diseño: tunear el compresor por reconstrucción, no por downstream
+El AE se selecciona por **BCE de reconstrucción** (no supervisado), NO por el Pearson
+downstream. Razón: con un solo inner-val, tunear el AE end-to-end contra el Pearson
+le mete tantos grados de libertad al holdout que lo sobreajusta (p≫n, n chico). Así
+el embedding de cada dimensión es **único** (no depende del modelo) ⇒ se genera una
+vez y lo reusan GBLUP/XGBoost/NN. Por eso el AE NO pasa por `run_evaluation`
+(supervisado, por fold): tiene su propio entrypoint. El único entrypoint **supervisado**
+sigue siendo `train.py`; `train_ae.py` es el del compresor.
+
+### Régimen temporal y qué persiste (receta vs pesos)
+Sweep del AE: **train 2017 → val-reconstrucción BCE 2018** (mismo split 2017→2018 que
+GBLUP/XGB usan internamente). 2019 (val externo) y 2020 (sellado) intactos. El AE se
+**re-ajusta train-only en cada nivel** (regla 1): 2017 para elegir la dimensión
+(GBLUP/XGB 2017→2018); 2017+2018 para reportar en 2019; 2017+2018+2019 al cierre. Lo
+que persiste entre niveles es la **receta de HP** (`meta['ae_params']`), no los pesos
+(verificado: `train_years` en `n=901` para 2017, `n=1418` para 2018).
+
+### Dónde quedan los AE y cómo se recuperan
+Cada trial del sweep guarda su AE entrenado en `checkpoints/ae-snp-d<dim>/`
+(`ae.pt` + `meta.json` con HP, métricas y `train_years`) y como wandb Artifact
+`ae-snp-d<dim>` (versionado por trial). El mejor de cada dimensión se trae con
+`best_ae_from_sweep("entity/project/<sweep_id>")` (cruza `val_bce_best` mínimo con su
+Artifact y devuelve el `AutoencoderReducer` listo para `.transform`). Verificado
+end-to-end offline (entrena, loguea curvas, guarda y recupera idéntico, guard
+anti-leakage activo).
+
+### Plan de barrido (pendiente de correr)
+Un sweep bayesiano por dimensión, grilla solapada con la de PCA para comparar
+`AE-d` vs `PCA-d`: **32 / 64 / 128 / 256** (bien por debajo del techo de rango 901;
+el interés está donde el AE no lineal podría ganarle a PCA de la misma dim, no en
+dims altas que ya son *denoising*). Después: selección de dimensión por Pearson de
+GBLUP/XGBoost en inner-val 2018, comparación contra baseline en 2019, cierre en 2020.

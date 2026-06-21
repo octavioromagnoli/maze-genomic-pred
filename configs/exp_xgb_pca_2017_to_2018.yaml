@@ -1,0 +1,71 @@
+# XGBoost sobre componentes principales (PCA) — CONTROL lineal para AE-d vs PCA-d.
+# SELECCIÓN de HP: train 2017 -> val 2018 (inner honesto, sin tocar 2019).
+#
+# PCA es el compresor LINEAL: misma cadena que el AE pero sin red. La dimensión se
+# fija acá (preprocess.pca.n_components) -- cambiá esa UNA línea para barrer otra dim.
+# Por defecto 128: fue la mejor dim de PCA bajo selección honesta en inner-2018 en la
+# comparación con GBLUP (Pearson 0.378, vs 0.33/0.32/0.34 de 16/64/256). Los HP de
+# XGBoost los barre el MISMO configs/sweep_xgb.yaml.
+
+experiment:
+  name: xgb_pca_d128_2017_to_2018
+  description: >
+    XGBoost sobre componentes principales (PCA train-only, regla 1). Selección de HP
+    entrenando con 2017 y validando en 2018 (inner honesto). Control lineal de igual
+    dimensión que el AE. 2019 queda para el reporte y 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de selección (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# Compresor lineal: z-score por-SNP (stats de train) + PCA train-only. Cambiá
+# n_components para barrer otra dimensión (32 / 64 / 128 / 256, igual que el AE).
+preprocess:
+  standardize: true
+  pca:
+    n_components: 128        # <-- DIMENSIÓN: cambiala según el run (default 128)
+    whiten: false
+    svd_solver: full         # determinista
+
+model:
+  name: xgboost
+  params:
+    # n_estimators lo barre el sweep: con un solo año de train (2017) NO hay
+    # inner-split temporal, así que XGBoost no puede early-stoppear -> el número de
+    # árboles es un HP más.
+    n_estimators: 300
+    max_depth: 4
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_lambda: 1.0
+    reg_alpha: 0.0
+    min_child_weight: 1
+    gamma: 0.0
+    n_jobs: 1                   # evita segfault nativo observado con n_jobs=-1
+    random_state: 575
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [xgboost, pca, d128, dev, select, train2017, val2018, GY, optimal]

@@ -143,6 +143,14 @@ class PreprocChain:
     def __init__(self, steps: list) -> None:
         self.steps = list(steps)
 
+    def set_fit_context(self, **context: Any) -> None:
+        """Propaga el contexto del fold (year/line_id) a los pasos que lo acepten
+        (p.ej. el autoencoder, que lo usa para su held-out por línea sin leakage)."""
+        for step in self.steps:
+            setter = getattr(step, "set_fit_context", None)
+            if callable(setter):
+                setter(**context)
+
     def fit_transform(self, X: np.ndarray, y: Any = None) -> np.ndarray:
         for step in self.steps:
             X = step.fit_transform(X, y)
@@ -166,13 +174,39 @@ def build_preprocessor(cfg: dict[str, Any] | None):
     """Construye el preprocesamiento train-only desde el bloque `preprocess`.
 
     Arma una cadena en orden: (1) filtro MAF + estandarización por-SNP
-    (`SNPPreprocessor`) si se pide; (2) PCA (`PCAReducer`) si hay sub-bloque
-    `pca`. Devuelve el único paso si hay uno solo, un `PreprocChain` si hay
-    varios, o ``None`` si no hay nada que hacer. Mantiene compatibilidad con los
-    configs que solo declaran `maf_threshold`/`standardize`.
+    (`SNPPreprocessor`) si se pide; (2) un reductor de dimensionalidad si hay
+    sub-bloque `pca` (`PCAReducer`) **o** `autoencoder` (`AutoencoderReducer`).
+    Devuelve el único paso si hay uno solo, un `PreprocChain` si hay varios, o
+    ``None`` si no hay nada que hacer. Mantiene compatibilidad con los configs que
+    solo declaran `maf_threshold`/`standardize`.
+
+    `pca` y `autoencoder` son mutuamente excluyentes (dos compresores no se
+    encadenan). El autoencoder exige SNPs binarios (regla 4: BCE), así que NO se
+    le antepone `standardize` (el z-score lo hace después GBLUP internamente); su
+    filtro MAF va dentro del propio reducer (`autoencoder.maf_threshold`).
     """
     if not cfg:
         return None
+
+    pca_cfg = cfg.get("pca")
+    ae_cfg = cfg.get("autoencoder")
+    if pca_cfg and ae_cfg:
+        raise ValueError("preprocess: 'pca' y 'autoencoder' son excluyentes (dos compresores).")
+
+    # --- Autoencoder: compresor autocontenido (su MAF va adentro) -----------
+    if ae_cfg:
+        if cfg.get("standardize", False):
+            raise ValueError(
+                "No uses standardize antes del autoencoder: rompe la binariedad de "
+                "los SNPs (regla 4, BCE). El z-score va después (lo hace GBLUP)."
+            )
+        from src.models.autoencoder import AutoencoderReducer  # import diferido (torch)
+
+        ae_params = dict(ae_cfg)
+        # MAF declarado a nivel `preprocess` se delega al reducer si no lo trae él.
+        if cfg.get("maf_threshold") and "maf_threshold" not in ae_params:
+            ae_params["maf_threshold"] = cfg["maf_threshold"]
+        return AutoencoderReducer(ae_params)
 
     steps: list = []
     if cfg.get("maf_threshold", 0.0) or cfg.get("standardize", False):
@@ -183,7 +217,6 @@ def build_preprocessor(cfg: dict[str, Any] | None):
             )
         )
 
-    pca_cfg = cfg.get("pca")
     if pca_cfg:
         steps.append(
             PCAReducer(
