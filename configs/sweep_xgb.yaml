@@ -21,7 +21,7 @@
 # Uso (uno por dimensión/compresor):
 #   wandb login                                   # una vez (controller online)
 #   wandb sweep configs/sweep_xgb.yaml            # imprime el <sweep_id>
-#   WANDB_MODE=online wandb agent <entity>/<project>/<sweep_id>   # dentro de tmux
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>    # dentro de tmux
 #
 # Costo: run_cap acota los trials. Con un AE, CADA trial re-entrena el AE train-only
 # en 2017 (~10 s/fit en GPU; UNA vez por trial, sin early stopping); bajá run_cap para
@@ -29,7 +29,7 @@
 
 entity: oromagnoli-
 project: maze-genomic-pred
-name: sweep_xgb_ae_d64           # <-- cambialo junto con el --config de abajo
+name: sweep_xgb_pca_d256           # <-- cambialo junto con el --config de abajo
 program: scripts/train.py
 method: bayes
 run_cap: 60
@@ -75,4 +75,4 @@ command:
   - ${interpreter}
   - ${program}
   - "--config"
-  - configs/exp_xgb_ae_d64_2017_to_2018.yaml         # <-- cambiá dim/compresor acá
+  - configs/exp_xgb_ae_d256_2017_to_2018.yaml         # <-- cambiá dim/compresor acá

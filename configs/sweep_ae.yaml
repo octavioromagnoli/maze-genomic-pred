@@ -5,7 +5,7 @@
 # Uso (uno por dimensión):
 #   wandb login                                    # una vez (el controller es online)
 #   wandb sweep configs/sweep_ae.yaml              # imprime el <sweep_id>
-#   WANDB_MODE=online wandb agent <entity>/<project>/<sweep_id>   
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   
 #
 # Para otra dimensión: cambiá el `value` de preprocess.autoencoder.latent_dim acá
 #  El Artifact se nombra solo ("ae-snp-d<dim>", porque artifacts.name queda null en el config base).
