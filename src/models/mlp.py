@@ -21,8 +21,13 @@ Decisiones de diseño alineadas con las reglas del proyecto:
   default, se reentrena un modelo final desde cero con TODO el train del fold
   (p.ej. 2017+2018) por el número de épocas seleccionado. El val/test externo no
   se toca. Si hay un solo año en train, se entrena `max_epochs` fijo.
-- **MSE, no BCE.** La regla 4 (BCE) aplica a autoencoders que reconstruyen SNPs
-  binarios; acá la salida es un fenotipo continuo, así que la pérdida es MSE.
+- **Pérdida configurable: MSE o Pearson.** La regla 4 (BCE) aplica a
+  autoencoders que reconstruyen SNPs binarios; acá la salida es un fenotipo
+  continuo. Por `params.loss` se elige entre ``"mse"`` (default, convención
+  segura) y ``"pearson"`` (minimiza ``1 - r``, optimizando directamente la
+  métrica de portada, regla 5). El r es invariante a transformaciones afines, así
+  que con la pérdida Pearson la salida queda sin calibrar en escala (RMSE/R² dejan
+  de ser informativos; el Pearson —lo que importa— no se ve afectado).
 - **Reproducibilidad.** `random_state` siembra el RNG de torch dentro de `fit`
   (la seed global de `set_seed` no alcanza para fijar la inicialización de pesos
   de forma independiente por fold).
@@ -57,6 +62,28 @@ _ACTIVATIONS: dict[str, type[nn.Module]] = {
     "elu": nn.ELU,
 }
 
+_PEARSON_EPS = 1e-8
+
+
+def pearson_loss(pred: torch.Tensor, target: torch.Tensor, *, eps: float = _PEARSON_EPS) -> torch.Tensor:
+    """Pérdida ``1 - r`` de Pearson (diferenciable) entre predicción y target.
+
+    Maximizar el Pearson (métrica de portada, regla 5) equivale a minimizar
+    ``1 - r``. Usa medias (``ddof=0``), igual que `src.eval.metrics.pearson_r`, así
+    la pérdida y la métrica de evaluación coinciden. El r es invariante a
+    transformaciones afines de cada variable, de modo que da lo mismo que el target
+    venga estandarizado o crudo. Necesita un batch con >=2 muestras y varianza no
+    nula en ``pred``; con un batch degenerado (1 muestra o predicción constante) el
+    denominador colapsa y el ``eps`` evita el NaN devolviendo ~1.
+    """
+    pred = pred.reshape(-1)
+    target = target.reshape(-1)
+    pred_c = pred - pred.mean()
+    target_c = target - target.mean()
+    cov = (pred_c * target_c).mean()
+    denom = torch.sqrt((pred_c ** 2).mean() + eps) * torch.sqrt((target_c ** 2).mean() + eps)
+    return 1.0 - cov / (denom + eps)
+
 # Hiperparámetros por defecto: una red chica y regularizada, punto de partida
 # razonable para p >> n (una capa oculta angosta, dropout fuerte en la entrada y
 # en la capa oculta, weight decay). Se overridean por `model.params` en el YAML.
@@ -70,10 +97,11 @@ _DEFAULTS: dict[str, Any] = {
     "weight_decay": 1e-4,
     "batch_size": 64,
     "max_epochs": 200,
+    "loss": "mse",            # "mse" | "pearson" (1 - r de Pearson, diferenciable)
     "patience": None,         # None => sin early stopping
     "eval_scheme": "temporal",
     "refit_full_train": True,
-    "val_metric": "loss",     # "loss" (MSE inner-val) | "pearson"
+    "val_metric": "loss",     # "loss" (pérdida inner-val) | "pearson"
     "min_delta": 0.0,
     "standardize_inputs": True,
     "standardize_target": True,
@@ -149,6 +177,8 @@ class MLPRegressor(BaseModel):
         weight_decay       : L2 de Adam (default 1e-4).
         batch_size         : tamaño de minibatch; <=0 o >= n => full-batch (default 64).
         max_epochs         : épocas máximas (default 200).
+        loss               : "mse" (default) | "pearson". Pérdida que minimiza el
+            optimizador; "pearson" minimiza ``1 - r`` (optimiza la portada, regla 5).
         patience           : int opcional. Si está, activa early stopping con un
             inner-val temporal (último año del train). Default: sin early stopping.
         eval_scheme        : "temporal" (default), único esquema soportado.
@@ -169,6 +199,7 @@ class MLPRegressor(BaseModel):
         cfg["hidden_dims"] = [int(h) for h in cfg["hidden_dims"]]
         cfg["activation"] = str(cfg["activation"]).lower()
         cfg["eval_scheme"] = str(cfg["eval_scheme"]).lower()
+        cfg["loss"] = str(cfg["loss"]).lower()
         cfg["val_metric"] = str(cfg["val_metric"]).lower()
         cfg["batch_size"] = int(cfg["batch_size"])
         cfg["max_epochs"] = int(cfg["max_epochs"])
@@ -251,13 +282,21 @@ class MLPRegressor(BaseModel):
     ):
         """Entrena la red. Devuelve (net, history, best_epoch, best_val).
 
-        Con ``Xv`` se trackea inner-val por época (loss MSE + pearson). Si
+        Con ``Xv`` se trackea inner-val por época (loss según ``cfg.loss`` + pearson). Si
         ``patience`` está y la métrica de val no mejora ``patience`` épocas
         seguidas, corta. Con ``restore_best`` deja los pesos de la mejor época.
         """
         net = self._build_net(Xs.shape[1], cfg).to(device)
         optim = torch.optim.Adam(net.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
-        loss_fn = nn.MSELoss()
+        if cfg["loss"] == "mse":
+            loss_fn = nn.MSELoss()
+        elif cfg["loss"] == "pearson":
+            loss_fn = pearson_loss
+        else:
+            raise ValueError(f"loss desconocida: {cfg['loss']!r}. Disponibles: 'mse', 'pearson'.")
+        # La pérdida Pearson necesita >=2 muestras por batch (un batch de 1 da r
+        # indefinido), igual que BatchNorm: en ambos casos se descarta la cola de 1.
+        drop_singleton = cfg["batchnorm"] or cfg["loss"] == "pearson"
 
         Xt = torch.as_tensor(Xs, dtype=torch.float32, device=device)
         yt = torch.as_tensor(ys, dtype=torch.float32, device=device)
@@ -284,8 +323,8 @@ class MLPRegressor(BaseModel):
             else:
                 perm = torch.randperm(n, device=device)
                 batches = list(torch.split(perm, bs))
-                # BatchNorm rompe con un batch de tamaño 1: descartar la cola.
-                if cfg["batchnorm"] and batches and batches[-1].numel() == 1:
+                # BatchNorm y la pérdida Pearson rompen con un batch de tamaño 1.
+                if drop_singleton and batches and batches[-1].numel() == 1:
                     batches = batches[:-1]
             run_loss = 0.0
             seen = 0

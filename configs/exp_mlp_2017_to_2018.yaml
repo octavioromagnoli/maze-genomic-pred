@@ -1,0 +1,87 @@
+# MLP (PyTorch) — CONFIG BASE del sweep de la red. SELECCIÓN HONESTA de HP:
+# train 2017 -> val 2018 (clavado acá). Se elige sobre 2018 sin tocar 2019, así no
+# hay winner's curse sobre el set de reporte. El reporte final (reentrenar 2017+2018
+# -> val 2019, comparado con GBLUP) se hace en el notebook con los HP ganadores; 2020
+# queda sellado.
+#
+# Lo barre configs/sweep_mlp.yaml (HP en model.params.*). NO tocar cv.* ni data.*
+# (reglas 2 y 3): el split vive acá.
+#
+# LOSS = PEARSON (pedido explícito): la red minimiza 1 - r, optimizando directamente
+# la métrica de portada (regla 5). OJO: el r es invariante a transformaciones afines,
+# así que la salida de la red NO queda calibrada en escala -> RMSE/R² de este modelo
+# dejan de ser informativos (el Pearson, lo único que nos importa acá, no se ve
+# afectado). Para el informe se reporta Pearson.
+#
+# Con UN solo año de train (2017) no hay inner-split temporal (temporal_inner_split
+# necesita >=2 años), así que NO hay early stopping: la red entrena `max_epochs`
+# fijo y `max_epochs` pasa a ser un HP más del sweep (igual que n_estimators en
+# XGBoost). Por eso patience queda en null.
+
+experiment:
+  name: mlp_2017_to_2018
+  description: >
+    MLP (perceptron multicapa, PyTorch) para GY en ambiente optimo, entrenado con
+    2017 y validado en 2018 para la SELECCION de hiperparametros (inner honesto, sin
+    tocar 2019). Toma los marcadores crudos como entrada (estandarizados train-only
+    dentro del modelo) y predice GY con una cabeza lineal. La perdida es 1 - r de
+    Pearson (optimiza la metrica de portada). Sin early stopping (un solo ano de
+    train): max_epochs es un HP del sweep. 2019 queda para el reporte (reentrenando
+    2017+2018 en el notebook) y 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# OJO: este modelo hace su estandarizacion train-only DENTRO de fit (regla 1) y
+# overridea save/load (state_dict + arquitectura). No se usa el bloque `preprocess:`.
+
+model:
+  name: mlp
+  params:
+    # --- arquitectura / regularizacion (valores base; el sweep los pisa) ---
+    hidden_dims: [128]
+    dropout: 0.5
+    input_dropout: 0.3
+    activation: relu
+    batchnorm: false
+    # --- optimizacion ---
+    lr: 0.0005
+    weight_decay: 0.001
+    batch_size: 64              # el sweep barre batch_size (incluye full-batch = 0)
+    max_epochs: 100             # HP del sweep (no hay early stopping con 1 ano de train)
+    # --- perdida = Pearson (pedido explicito): minimiza 1 - r ---
+    loss: pearson               # "mse" | "pearson"
+    patience: null              # sin early stopping: con un solo ano no hay inner-split
+    eval_scheme: temporal
+    refit_full_train: true      # con patience=null es no-op (entrena max_epochs sobre 2017)
+    val_metric: pearson         # irrelevante sin inner-split; coherente por las dudas
+    standardize_inputs: true
+    standardize_target: true    # con loss pearson da igual (r invariante a afines)
+    random_state: 575           # seed del RNG de torch (init de pesos); NO se barre
+    device: auto                # usa GPU si hay (acelera el sweep), cae a cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false             # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [mlp, nn, pytorch, sweep, select, train2017, val2018, GY, optimal, pearson-loss]
