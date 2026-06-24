@@ -690,3 +690,80 @@ Un sweep bayesiano por dimensión, grilla solapada con la de PCA para comparar
 el interés está donde el AE no lineal podría ganarle a PCA de la misma dim, no en
 dims altas que ya son *denoising*). Después: selección de dimensión por Pearson de
 GBLUP/XGBoost en inner-val 2018, comparación contra baseline en 2019, cierre en 2020.
+
+## Fase 6 — Sweep del MLP + pérdida Pearson + matching20
+
+**Objetivo:** llevar la red de la Fase 4 (MLP base, HP fijos a mano, pérdida MSE) a una
+**selección sistemática de HP por sweep**, con la red **optimizando Pearson** (loss =
+`1 − r`, no MSE); comparar los mejores contra GBLUP con el mismo protocolo honesto que
+XGBoost; y sumar una métrica de **utilidad para selección** (matching20) a todo el
+harness. 2020 sigue sellado.
+
+### Qué quedó armado
+- **Pérdida Pearson** en [`src/models/mlp.py`](../src/models/mlp.py): `pearson_loss`
+  minimiza `1 − r` con la **misma fórmula** (medias, `ddof=0`) que
+  [`metrics.py`](../src/eval/metrics.py)`.pearson_r`. Se elige por el HP
+  `model.params.loss` (`"mse" | "pearson"`); **default `"mse"`** para no alterar la Fase 4.
+  Robustez: descarta batches de tamaño 1 (como con BatchNorm) y un `eps` evita el NaN.
+- **Config base** [`exp_mlp_2017_to_2018.yaml`](../configs/exp_mlp_2017_to_2018.yaml)
+  (train 2017 → val 2018, `loss: pearson`, `patience: null`, `device: auto`) +
+  **sweep bayesiano** [`sweep_mlp.yaml`](../configs/sweep_mlp.yaml) (200 trials,
+  maximiza `pearson_r_mean`, barre arquitectura/activación/batchnorm/dropouts/wd/lr/
+  batch_size/`max_epochs`).
+- **matching20** (coincidence index al top-20%) centralizado en
+  [`metrics.py`](../src/eval/metrics.py)`.coincidence_index` e integrado a
+  `run_evaluation` (per_fold + IC por bootstrap). La cache key de resultados sube a
+  `metrics_v=2` para invalidar lo viejo sin borrar a mano.
+- **Learning curves** del MLP: `run_evaluation` devuelve `history_` por fold y
+  [`train.py`](../scripts/train.py) lo loguea a wandb con eje x = época (`define_metric`).
+- **Recuperación del top-k**: `top_runs_from_sweep`
+  ([`src/training/sweep.py`](../src/training/sweep.py)) trae los k mejores trials.
+
+### Pérdida = Pearson (loss = 1 − r): por qué y qué implica
+- **Alinea con la portada (regla 5).** Maximizar Pearson ≡ minimizar `1 − r`. En p≫n el
+  MSE se minimiza prediciendo ~la media; con la loss Pearson el gradiente apunta directo
+  al ranking.
+- **La salida queda sin calibrar en escala** (el r es invariante a afines): **RMSE/R² de
+  estos MLP NO son informativos** (no compararlos como con los otros modelos); el Pearson
+  y el matching20 sí. Para el informe se reporta Pearson.
+
+### Selección honesta + max_epochs como HP
+El sweep entrena **2017** y valida en **2018** (sin tocar 2019). Con un **único año de
+train** no hay inner-split temporal (`temporal_inner_split` necesita ≥2 años) ⇒ **sin
+early stopping**: `max_epochs` es un HP más (mismo criterio que `n_estimators` en
+XGBoost), por eso `patience: null`.
+
+### Resultados de selección (val 2018, sweep `kyl04lf5`)
+Los 3 mejores trials por Pearson en 2018 (todos `leaky_relu`/`relu`, sin batchnorm):
+
+| # | run | Pearson 2018 | arquitectura | lr | dropout | in_drop | wd | batch | epochs |
+|---|-----|------|------|------|------|------|------|------|------|
+| 1 | `hhhrp5a0` | **0.418** | `[128, 64]` | 0.0037 | 0.64 | 0.35 | 0.0057 | 32 | 249 |
+| 2 | `t03pixd3` | 0.402 | `[2048,1024,512,256]` | 0.0012 | 0.13 | 0.002 | 0.0040 | 64 | 364 |
+| 3 | `4lh9j7jg` | 0.389 | `[2048,1024,512,256]` | 0.0009 | 0.03 | 0.45 | 1e-6 | 64 | 310 |
+
+Esos 0.40+ son en 2018 (cohorte ruidosa, set de selección), **no** el veredicto. El
+reporte honesto (reentrenar 2017+2018 → val 2019, vs GBLUP) corre en el notebook
+[`comparar_modelos_ci.ipynb`](../notebooks/comparar_modelos_ci.ipynb); como con XGBoost
+(2018 0.46 → 2019 0.25), esperar que 2019 baje. *(Pendiente de cerrar con los números de
+2019; cada uno linkeará a su corrida.)*
+
+### matching20 — coincidencia del top-20% (utilidad de selección)
+- **Qué mide**: de las **líneas/genotipos** que están en el mejor 20% por GY observado en
+  val, qué proporción el modelo también pone en su mejor 20% por GY predicho
+  (`|top_obs ∩ top_pred| / k`, `k = round(0.2·n)`). Es el *coincidence index* estándar de
+  selección truncada — sobre líneas, **no** sobre genes/marcadores.
+- **Cómo se lee**: una selección al azar acierta ~**0.20** (el piso a batir); 1.0 =
+  recupera exacto el top. Asume "más GY = mejor". Tiene su IC por el mismo bootstrap
+  cluster a nivel línea, y aparece para **todos** los modelos del notebook (en `METRICS`)
+  con la vista de conteo "a cuántas líneas les pegó".
+
+### Por qué no se logueaban las curvas (y qué cambió)
+El MLP guardaba `history_` pero el camino supervisado (`run_evaluation`) solo logueaba
+métricas **finales por fold** — no propagaba un hook por época (a diferencia de
+`train_ae.py`, que sí lo hace para el AE). Por eso en wandb solo quedaba el resultado
+final: era esperable, no un bug. Ahora `train.py` loguea la curva por época. **Limitación
+del régimen del sweep**: con 1 año de train (2017) no hay inner-val, así que por época
+solo existe `train_loss` (la curva de val aparece solo con early stopping, ≥2 años). Los
+200 trials ya corridos no tienen curva (no se puede recuperar); aplica a corridas futuras.
+En el notebook las learning curves de los 3 MLP finales se grafican desde `history_`.

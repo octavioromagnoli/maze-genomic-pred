@@ -69,6 +69,45 @@ def best_run_from_sweep(
     return overrides, best_val, best_run.id
 
 
+def top_runs_from_sweep(
+    sweep_path: str,
+    k: int = 3,
+    *,
+    metric: str | None = None,
+    goal: str | None = None,
+) -> list[tuple[dict[str, Any], float, str]]:
+    """Los ``k`` mejores trials del sweep: lista ``[(overrides, metric_value, run_id)]``.
+
+    Mismo criterio que `best_run_from_sweep` (lee ``run.summary[metric]`` con el
+    ``metric``/``goal`` del config del sweep, pisable por argumento), pero devuelve el
+    top-``k`` ordenado de mejor a peor. Útil para comparar los mejores modelos de un
+    sweep, no solo el ganador. Saltea runs sin la métrica o sin HP barridos.
+    """
+    import wandb
+
+    api = wandb.Api()
+    sweep = api.sweep(sweep_path)
+    mcfg = (getattr(sweep, "config", {}) or {}).get("metric", {})
+    metric = metric or mcfg.get("name", "pearson_r_mean")
+    maximize = not (goal or mcfg.get("goal", "maximize")).lower().startswith("min")
+
+    scored: list[tuple[dict[str, Any], float, str]] = []
+    for run in sweep.runs:
+        val = run.summary.get(metric)
+        if val is None:
+            continue
+        overrides = {kk: vv for kk, vv in dict(run.config).items() if "." in kk}
+        if overrides:
+            scored.append((overrides, float(val), run.id))
+    if not scored:
+        raise ValueError(
+            f"Ningún run del sweep {sweep_path} tiene '{metric}' en summary con HP "
+            "barridos (claves con punto)."
+        )
+    scored.sort(key=lambda t: t[1], reverse=maximize)
+    return scored[: int(k)]
+
+
 def best_config_from_sweep(
     sweep_path: str,
     base_config: str | dict[str, Any],

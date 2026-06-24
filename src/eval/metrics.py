@@ -49,6 +49,45 @@ def r2(y_true, y_pred) -> float:
     return float(1.0 - ss_res / ss_tot)
 
 
+def coincidence_index(y_true, y_pred, frac: float = 0.2, *, higher_is_better: bool = True) -> float:
+    """Coincidence index (*matching*) para selección: aciertos en el top-``frac``.
+
+    Mide la utilidad del modelo para **seleccionar líneas**, no para predecir el valor
+    exacto: de las líneas que realmente caen en el mejor ``frac`` por fenotipo
+    **observado**, ¿qué proporción el modelo también pone en su mejor ``frac`` por valor
+    **predicho**? Es la métrica de selección truncada estándar en mejoramiento genómico.
+
+    Ojo: se evalúa sobre **líneas/genotipos** (las observaciones del fold), no sobre
+    "genes" ni marcadores. ``frac=0.2`` ⇒ matching20 (top-20%).
+
+    Args:
+        frac: fracción de corte en (0, 1]. 0.2 = top-20%.
+        higher_is_better: ``True`` (p.ej. GY: más rinde = mejor) toma los valores más
+            altos; ``False`` (p.ej. días a floración más cortos) invierte el orden.
+
+    Returns:
+        Proporción de aciertos en ``[0, 1]`` = ``|top_obs ∩ top_pred| / k`` con
+        ``k = round(frac·n)``. **Referencia**: una selección al azar acierta ~``frac``
+        (0.2 para el top-20%); 1.0 = recupera exactamente el top observado. ``nan`` si
+        ``n < 2`` o si alguna serie es ~constante (sin ranking posible, igual que
+        `pearson_r`). El conteo "a cuántos les pegó" se recupera como ``round(ci·k)``.
+    """
+    yt, yp = _clean_pair(y_true, y_pred)
+    n = yt.size
+    if n < 2:
+        return float("nan")
+    if yt.std() < _EPS or yp.std() < _EPS:   # predicción/target constante => top ambiguo
+        return float("nan")
+    k = max(1, int(round(frac * n)))
+    if k >= n:                       # frac ~1: el top es todo => coincidencia trivial
+        return 1.0
+    if not higher_is_better:
+        yt, yp = -yt, -yp
+    top_true = np.argpartition(yt, -k)[-k:]   # índices de los k mayores (sin ordenar)
+    top_pred = np.argpartition(yp, -k)[-k:]
+    return float(np.intersect1d(top_true, top_pred).size / k)
+
+
 def regression_metrics(y_true, y_pred) -> dict[str, float]:
     """Devuelve las tres métricas + n en un dict (orden: portada primero)."""
     yt, _ = _clean_pair(y_true, y_pred)

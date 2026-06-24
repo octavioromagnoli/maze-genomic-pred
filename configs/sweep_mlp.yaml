@@ -32,7 +32,7 @@ project: maze-genomic-pred
 name: sweep_mlp_pearson_2017_to_2018
 program: scripts/train.py
 method: bayes
-run_cap: 80
+run_cap: 200
 
 metric:
   name: pearson_r_mean
@@ -50,6 +50,7 @@ parameters:
       - [256, 128]
       - [512, 256]
       - [256, 128, 64]
+      - [2048, 1024, 512, 256]
   model.params.activation:
     values: [relu, gelu, leaky_relu, elu, tanh]
   model.params.batchnorm:

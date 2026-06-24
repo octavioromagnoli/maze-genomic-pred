@@ -142,7 +142,7 @@ def main() -> None:
     # IC con nombres limpios en run.summary (split fijo => un único fold).
     if len(results["per_fold"]) == 1:
         f0 = results["per_fold"][0]
-        for m in ("pearson_r", "rmse", "r2"):
+        for m in ("pearson_r", "rmse", "r2", "matching20"):
             if f"{m}_lo" in f0:
                 run.summary[f"{m}_lo"] = f0[f"{m}_lo"]
                 run.summary[f"{m}_hi"] = f0[f"{m}_hi"]
@@ -168,6 +168,29 @@ def main() -> None:
                 hist[f"{prefix}/{name}"] = wandb.Histogram(s)
         if hist:
             run.log(hist)
+
+    # Learning curves por época (si el modelo las expone, p.ej. el MLP guarda
+    # history_). Se loguean con un eje x propio (define_metric) para que el panel use
+    # la época y no choque con el step global del run. En el régimen del sweep (1 año
+    # de train, sin inner-val) solo hay train_loss; con early stopping (>=2 años) van
+    # además val_loss y val_pearson por época.
+    curves = results.get("histories", [])
+    for entry in curves:
+        hist_rows = entry.get("history") or []
+        if not hist_rows:
+            continue
+        prefix = "curve" if len(curves) == 1 else f"curve/fold{entry['fold']}"
+        step_metric = f"{prefix}/epoch"
+        run.define_metric(step_metric)
+        run.define_metric(f"{prefix}/*", step_metric=step_metric)
+        for rec in hist_rows:
+            payload = {
+                f"{prefix}/{k}": v for k, v in rec.items()
+                if k != "epoch" and isinstance(v, (int, float)) and not isinstance(v, bool)
+            }
+            if payload:
+                payload[step_metric] = int(rec.get("epoch", 0))
+                run.log(payload)
 
     # Modelo entrenado como Artifact (si el config lo pide). Con el split fijo se
     # guarda el del único fold de validación; train_years queda en metadata para el

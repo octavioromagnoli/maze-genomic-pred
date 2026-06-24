@@ -7,6 +7,7 @@ import numpy as np
 from src.data.loader import load_dataset
 from src.eval.metrics import (
     bootstrap_ci,
+    coincidence_index,
     pearson_r,
     r2,
     regression_metrics,
@@ -22,8 +23,10 @@ from src.models.registry import build_model
 
 LogFn = Callable[[dict[str, Any]], None]
 
-# Métricas a las que se les calcula IC por bootstrap (mismo resample para las 3).
-_CI_METRICS = {"pearson_r": pearson_r, "rmse": rmse, "r2": r2}
+# Métricas a las que se les calcula IC por bootstrap (mismo resample para todas).
+# matching20 = coincidence_index al top-20% (frac=0.2, higher_is_better por defecto:
+# GY más alto = mejor línea); el bootstrap cluster a nivel línea le da su IC.
+_CI_METRICS = {"pearson_r": pearson_r, "rmse": rmse, "r2": r2, "matching20": coincidence_index}
 # Bookkeeping que NO entra al resumen; los bordes _lo/_hi tampoco (se setean
 # aparte con nombres limpios). Todo otro escalar numérico sí se resume.
 _SUMMARY_EXCLUDE = {"fold", "n", "n_train", "n_val", "val_year", "train_years"}
@@ -136,6 +139,7 @@ def run_evaluation(
     per_fold: list[dict[str, float]] = []
     boot_samples: list[dict[str, Any]] = []
     trained: list[dict[str, Any]] = []
+    histories: list[dict[str, Any]] = []
     for i, (train_idx, val_idx, scoring) in enumerate(folds):
         # Guard duro: ninguna línea cruza train/val (regla 2).
         assert_no_line_leakage(train_idx, val_idx, arrays.line_id)
@@ -154,6 +158,9 @@ def run_evaluation(
         y_hat = model.predict(X_va)
 
         m = regression_metrics(y_va, y_hat)
+        # matching20: utilidad del modelo para SELECCIONAR el top-20% de líneas
+        # (coincidence index predicho↔observado sobre el val del fold).
+        m["matching20"] = coincidence_index(y_va, y_hat, 0.2)
         train_years = sorted(set(int(y) for y in arrays.year[train_idx]))
         val_years = sorted(set(int(y) for y in arrays.year[val_idx]))
         m.update(
@@ -188,6 +195,12 @@ def run_evaluation(
             boot_samples.append({"fold": i, **{name: b["samples"] for name, b in ci.items()}})
 
         per_fold.append(m)
+        # Curva de entrenamiento por época, si el modelo la expone (el MLP guarda
+        # history_ con train_loss y, cuando hubo inner-val, val_loss/val_pearson).
+        # Permite graficar/loguear las learning curves; se cachea con los resultados.
+        hist = getattr(model, "history_", None) or getattr(getattr(model, "inner", None), "history_", None)
+        if hist:
+            histories.append({"fold": i, "history": list(hist)})
         if return_models:
             # Modelo ya ajustado SOLO con train de este fold; train_years queda en
             # metadata para que load_model_artifact pueda chequear leakage al reusarlo.
@@ -223,6 +236,7 @@ def run_evaluation(
         "per_fold": per_fold,
         "summary": summary,
         "bootstrap": boot_samples,
+        "histories": histories,
         "target": target,
         "env": env,
         "n_obs": int(arrays.X.shape[0]),
