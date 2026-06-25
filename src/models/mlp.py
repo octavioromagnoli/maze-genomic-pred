@@ -21,13 +21,17 @@ Decisiones de diseño alineadas con las reglas del proyecto:
   default, se reentrena un modelo final desde cero con TODO el train del fold
   (p.ej. 2017+2018) por el número de épocas seleccionado. El val/test externo no
   se toca. Si hay un solo año en train, se entrena `max_epochs` fijo.
-- **Pérdida configurable: MSE o Pearson.** La regla 4 (BCE) aplica a
+- **Pérdida configurable: MSE, Pearson o Pearson+MSE.** La regla 4 (BCE) aplica a
   autoencoders que reconstruyen SNPs binarios; acá la salida es un fenotipo
   continuo. Por `params.loss` se elige entre ``"mse"`` (default, convención
-  segura) y ``"pearson"`` (minimiza ``1 - r``, optimizando directamente la
-  métrica de portada, regla 5). El r es invariante a transformaciones afines, así
-  que con la pérdida Pearson la salida queda sin calibrar en escala (RMSE/R² dejan
-  de ser informativos; el Pearson —lo que importa— no se ve afectado).
+  segura), ``"pearson"`` (minimiza ``1 - r``, optimizando directamente la
+  métrica de portada, regla 5) y ``"pearson_mse"``. El r es invariante a
+  transformaciones afines, así que con la pérdida Pearson pura la salida queda sin
+  calibrar en escala (RMSE/R² dejan de ser informativos; el Pearson —lo que
+  importa— no se ve afectado). ``"pearson_mse"`` suma ``mse_weight·MSE`` (sobre el
+  target estandarizado): mantiene el ranking que da el término Pearson pero ancla
+  la escala, así RMSE/R² vuelven a ser informativos (``mse_weight`` regula el
+  trade-off; default 0.3).
 - **Reproducibilidad.** `random_state` siembra el RNG de torch dentro de `fit`
   (la seed global de `set_seed` no alcanza para fijar la inicialización de pesos
   de forma independiente por fold).
@@ -97,7 +101,8 @@ _DEFAULTS: dict[str, Any] = {
     "weight_decay": 1e-4,
     "batch_size": 64,
     "max_epochs": 200,
-    "loss": "mse",            # "mse" | "pearson" (1 - r de Pearson, diferenciable)
+    "loss": "mse",            # "mse" | "pearson" (1 - r) | "pearson_mse" (1 - r + w·MSE)
+    "mse_weight": 0.3,        # peso del término MSE cuando loss="pearson_mse"
     "patience": None,         # None => sin early stopping
     "eval_scheme": "temporal",
     "refit_full_train": True,
@@ -177,8 +182,11 @@ class MLPRegressor(BaseModel):
         weight_decay       : L2 de Adam (default 1e-4).
         batch_size         : tamaño de minibatch; <=0 o >= n => full-batch (default 64).
         max_epochs         : épocas máximas (default 200).
-        loss               : "mse" (default) | "pearson". Pérdida que minimiza el
-            optimizador; "pearson" minimiza ``1 - r`` (optimiza la portada, regla 5).
+        loss               : "mse" (default) | "pearson" | "pearson_mse". Pérdida que
+            minimiza el optimizador; "pearson" minimiza ``1 - r`` (optimiza la portada,
+            regla 5); "pearson_mse" suma ``mse_weight·MSE`` para recalibrar la escala.
+        mse_weight         : peso del término MSE en "pearson_mse" (default 0.3). Solo
+            se usa con esa pérdida; ignorado con "mse"/"pearson".
         patience           : int opcional. Si está, activa early stopping con un
             inner-val temporal (último año del train). Default: sin early stopping.
         eval_scheme        : "temporal" (default), único esquema soportado.
@@ -200,6 +208,7 @@ class MLPRegressor(BaseModel):
         cfg["activation"] = str(cfg["activation"]).lower()
         cfg["eval_scheme"] = str(cfg["eval_scheme"]).lower()
         cfg["loss"] = str(cfg["loss"]).lower()
+        cfg["mse_weight"] = float(cfg["mse_weight"])
         cfg["val_metric"] = str(cfg["val_metric"]).lower()
         cfg["batch_size"] = int(cfg["batch_size"])
         cfg["max_epochs"] = int(cfg["max_epochs"])
@@ -292,11 +301,23 @@ class MLPRegressor(BaseModel):
             loss_fn = nn.MSELoss()
         elif cfg["loss"] == "pearson":
             loss_fn = pearson_loss
+        elif cfg["loss"] == "pearson_mse":
+            # 1 - r + w·MSE: el término Pearson manda el ranking (portada), el MSE
+            # ancla la escala (sobre el target ya estandarizado) ⇒ RMSE/R² vuelven a
+            # ser informativos. Reusa pearson_loss y nn.MSELoss.
+            _mse = nn.MSELoss()
+            _w = cfg["mse_weight"]
+
+            def loss_fn(pred, target):
+                return pearson_loss(pred, target) + _w * _mse(pred, target)
         else:
-            raise ValueError(f"loss desconocida: {cfg['loss']!r}. Disponibles: 'mse', 'pearson'.")
+            raise ValueError(
+                f"loss desconocida: {cfg['loss']!r}. Disponibles: 'mse', 'pearson', 'pearson_mse'."
+            )
         # La pérdida Pearson necesita >=2 muestras por batch (un batch de 1 da r
         # indefinido), igual que BatchNorm: en ambos casos se descarta la cola de 1.
-        drop_singleton = cfg["batchnorm"] or cfg["loss"] == "pearson"
+        # pearson_mse incluye el término Pearson ⇒ mismo cuidado.
+        drop_singleton = cfg["batchnorm"] or cfg["loss"] in ("pearson", "pearson_mse")
 
         Xt = torch.as_tensor(Xs, dtype=torch.float32, device=device)
         yt = torch.as_tensor(ys, dtype=torch.float32, device=device)

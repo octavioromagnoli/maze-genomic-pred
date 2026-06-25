@@ -1,0 +1,37 @@
+# Mini-sweep (A2): barre SOLO mse_weight de la pérdida pearson_mse, con el resto de los HP
+# clavados en el mejor MLP del sweep de Pearson (config base exp_mlp_pearson_mse_2017_to_2018).
+#
+# method: grid => evalúa exhaustivamente los 4 valores de mse_weight (reproducible; no hace
+# falta bayes para 1 HP discreto). SELECCIÓN HONESTA: train 2017 -> val 2018 (en el base),
+# sin tocar 2019.
+#
+# Métrica del controller: pearson_r_mean (Pearson de val 2018, MAXIMIZAR). OJO: subir
+# mse_weight solo puede mantener o bajar el Pearson; el interés NO es maximizarlo sino ver
+# hasta qué peso el Pearson se mantiene ~igual MIENTRAS RMSE/R² se vuelven informativos
+# (train.py loguea rmse/r2 en summary; se inspeccionan en wandb / notebook). mse_weight=0
+# equivale a loss=pearson pura (referencia de "Pearson máximo, escala sin calibrar").
+#
+# Uso:
+#   wandb sweep configs/sweep_mlp_pearson_mse.yaml         # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en tmux
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_mlp_pearson_mse_2017_to_2018
+program: scripts/train.py
+method: grid
+
+metric:
+  name: pearson_r_mean
+  goal: maximize
+
+parameters:
+  model.params.mse_weight:
+    values: [0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_mlp_pearson_mse_2017_to_2018.yaml

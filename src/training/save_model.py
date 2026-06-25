@@ -21,8 +21,9 @@ def _default_cache_dir() -> Path:
 
 # Versión del set de métricas de run_evaluation. Bumpear esto invalida el caché
 # viejo cuando cambia QUÉ se calcula (no solo los HP): v2 agrega matching20
-# (coincidence index al top-20%) al per_fold y su IC por bootstrap.
-_METRICS_VERSION = 2
+# (coincidence index al top-20%) al per_fold y su IC por bootstrap; v3 agrega
+# `predictions` por fold (y_true/y_pred + line_id) para los ensembles del notebook.
+_METRICS_VERSION = 3
 
 
 def results_cache_key(config: dict[str, Any], *, n_boot: int, alpha: float) -> str:

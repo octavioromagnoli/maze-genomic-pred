@@ -1,0 +1,77 @@
+# MLP (PyTorch) — A1 DROUGHT. CONFIG BASE del sweep de la red para GY en ambiente de
+# SEQUÍA (drought). Idéntico a exp_mlp_2017_to_2018.yaml salvo data.env: drought; drought
+# puede necesitar HP distintos, por eso se corre un sweep PROPIO y completo (no se reusan
+# los HP de optimal). SELECCIÓN HONESTA: train 2017 -> val 2018 (clavado acá), sin tocar
+# 2019. El reporte final (reentrenar 2017+2018 -> val 2019, vs GBLUP-drought) se hace en el
+# notebook con los HP ganadores; 2020 queda sellado.
+#
+# Lo barre configs/sweep_mlp_drought.yaml (HP en model.params.*). NO tocar cv.* ni data.*
+# (reglas 2 y 3): el split vive acá.
+#
+# LOSS = PEARSON: la red minimiza 1 - r (portada, regla 5). OJO: r invariante a afines => la
+# salida NO queda calibrada en escala (RMSE/R² no informativos; el Pearson sí). Sin early
+# stopping (1 solo año de train) => max_epochs es un HP del sweep; patience: null.
+
+experiment:
+  name: mlp_2017_to_2018_drought
+  description: >
+    MLP (perceptron multicapa, PyTorch) para GY en ambiente de SEQUIA (drought), entrenado
+    con 2017 y validado en 2018 para la SELECCION de hiperparametros (inner honesto, sin
+    tocar 2019). Marcadores crudos (estandarizados train-only dentro del modelo) -> cabeza
+    lineal. Perdida 1 - r de Pearson. Sin early stopping (un solo ano de train): max_epochs
+    es un HP del sweep. 2019 para el reporte (reentrenando 2017+2018 en el notebook) y 2020
+    sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+model:
+  name: mlp
+  params:
+    # --- arquitectura / regularizacion (valores base; el sweep los pisa) ---
+    hidden_dims: [128]
+    dropout: 0.5
+    input_dropout: 0.3
+    activation: relu
+    batchnorm: false
+    # --- optimizacion ---
+    lr: 0.0005
+    weight_decay: 0.001
+    batch_size: 64              # el sweep barre batch_size (incluye full-batch = 0)
+    max_epochs: 100             # HP del sweep (no hay early stopping con 1 ano de train)
+    # --- perdida = Pearson: minimiza 1 - r ---
+    loss: pearson               # "mse" | "pearson" | "pearson_mse"
+    patience: null              # sin early stopping: con un solo ano no hay inner-split
+    eval_scheme: temporal
+    refit_full_train: true      # con patience=null es no-op (entrena max_epochs sobre 2017)
+    val_metric: pearson         # irrelevante sin inner-split; coherente por las dudas
+    standardize_inputs: true
+    standardize_target: true    # con loss pearson da igual (r invariante a afines)
+    random_state: 575           # seed del RNG de torch (init de pesos); NO se barre
+    device: auto                # usa GPU si hay (acelera el sweep), cae a cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false             # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [mlp, nn, pytorch, sweep, select, train2017, val2018, GY, drought, pearson-loss]

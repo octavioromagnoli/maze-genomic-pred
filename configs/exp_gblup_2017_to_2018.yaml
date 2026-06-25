@@ -1,0 +1,48 @@
+# GBLUP — train SOLO 2017 -> predecir 2018 (GY, ambiente optimo). lambda_0 por REML.
+#
+# Sirve a A3 (ensemble MLP+GBLUP): da las predicciones de GBLUP en val 2018 para elegir el
+# peso del blend (alpha) en el inner-val 2018, sin tocar 2019 (regla 3, evita winner's
+# curse). El blend con el alpha elegido se evalua despues en 2019. 2020 sellado.
+
+experiment:
+  name: gblup_reml_2017_to_2018
+  description: >
+    GBLUP entrenado unicamente con 2017 y evaluado sobre 2018 para GY en ambiente optimo.
+    lambda_0 = sigma_E^2/sigma_u^2 por REML. Provee las predicciones de GBLUP en 2018 para
+    elegir el alpha del ensemble MLP+GBLUP (A3) de forma honesta. 2020 holdout intocable.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # año a predecir (inner-val para elegir alpha)
+  train_years: [2017]       # train SOLO con 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: gblup-reml-2017-to-2018
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [gblup, reml, dev, train2017, val2018, GY, optimal]

@@ -1,0 +1,78 @@
+# MLP (PyTorch) — A2: pérdida PEARSON+MSE sobre el MEJOR MLP del sweep (run hhhrp5a0,
+# sweep kyl04lf5). Mismo protocolo honesto que el resto: train 2017 -> val 2018 (no toca
+# 2019). El reporte final (reentrenar 2017+2018 -> 2019 vs GBLUP) se hace en el notebook.
+#
+# loss = pearson_mse: minimiza (1 - r) + mse_weight·MSE. El término Pearson manda el
+# ranking (portada, regla 5); el MSE (sobre el target estandarizado) ancla la escala, así
+# RMSE/R² VUELVEN a ser informativos (con loss=pearson pura quedaban sin calibrar). El
+# trade-off lo regula mse_weight: lo barre configs/sweep_mlp_pearson_mse.yaml (grid).
+#
+# Los HP de arquitectura/optim son los del mejor trial del sweep de Pearson en 2018
+# (hhhrp5a0): [128,64], leaky_relu, sin batchnorm, dropout 0.64 / input 0.35, wd 0.0057,
+# lr 0.0037, batch 32, 249 épocas. Ajustables con best_run_from_sweep si cambia el sweep.
+# Con UN solo año de train (2017) no hay inner-split temporal => sin early stopping
+# (patience: null); max_epochs es fijo (como n_estimators en XGBoost).
+
+experiment:
+  name: mlp_pearson_mse_2017_to_2018
+  description: >
+    MLP (perceptron multicapa, PyTorch) para GY en ambiente optimo, entrenado con 2017 y
+    validado en 2018. Perdida pearson_mse = (1 - r) + mse_weight*MSE: el termino Pearson
+    optimiza la portada y el MSE recalibra la escala (RMSE/R2 informativos). HP del mejor
+    trial del sweep kyl04lf5 (run hhhrp5a0). 2019 para el reporte (en el notebook) y 2020
+    sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+model:
+  name: mlp
+  params:
+    # --- arquitectura / regularizacion: mejor trial del sweep (hhhrp5a0) ---
+    hidden_dims: [128, 64]
+    dropout: 0.64
+    input_dropout: 0.35
+    activation: leaky_relu
+    batchnorm: false
+    # --- optimizacion ---
+    lr: 0.0037
+    weight_decay: 0.0057
+    batch_size: 32
+    max_epochs: 249             # fijo (no hay early stopping con 1 ano de train)
+    # --- perdida = Pearson + MSE (A2) ---
+    loss: pearson_mse           # "mse" | "pearson" | "pearson_mse"
+    mse_weight: 0.3             # peso del termino MSE (lo barre el mini-sweep)
+    patience: null              # sin early stopping: con un solo ano no hay inner-split
+    eval_scheme: temporal
+    refit_full_train: true      # con patience=null es no-op (entrena max_epochs sobre 2017)
+    val_metric: pearson         # irrelevante sin inner-split; coherente por las dudas
+    standardize_inputs: true
+    standardize_target: true    # NECESARIO: el termino MSE calibra en este espacio
+    random_state: 575           # seed del RNG de torch (init de pesos); NO se barre
+    device: auto                # usa GPU si hay, cae a cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false             # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [mlp, nn, pytorch, GY, optimal, pearson-mse-loss, train2017, val2018]
