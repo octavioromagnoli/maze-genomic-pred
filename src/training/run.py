@@ -154,7 +154,16 @@ def run_evaluation(
 
         model = build_model(config)  # modelo fresco por fold (sin fuga de estado)
         # Contexto del fold para selección interna de HP temporal-aware (regla 3).
-        model.set_fit_context(year=arrays.year[train_idx], line_id=arrays.line_id[train_idx])
+        # eval_X/eval_y = val del fold SOLO para MONITOREAR la curva por época (lo usa el MLP
+        # sin early stopping para loguear val_loss/val_pearson). NUNCA selecciona ni entrena
+        # sobre el val (patience=None ⇒ no corta, no restaura) ⇒ sin leakage; el resto de los
+        # modelos lo ignora. Las líneas de val son disjuntas del train (assert de arriba).
+        model.set_fit_context(
+            year=arrays.year[train_idx],
+            line_id=arrays.line_id[train_idx],
+            eval_X=X_va,
+            eval_y=y_va,
+        )
         model.fit(X_tr, y_tr)
         y_hat = model.predict(X_va)
 

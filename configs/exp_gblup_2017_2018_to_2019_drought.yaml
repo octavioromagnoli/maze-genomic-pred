@@ -42,5 +42,5 @@ artifacts:
 wandb:
   project: maze-genomic-pred
   entity: null
-  mode: offline
+  mode: online
   tags: [gblup, reml, dev, train2017-2018, val2019, GY, drought]

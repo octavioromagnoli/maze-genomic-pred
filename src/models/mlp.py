@@ -42,8 +42,11 @@ diagnóstico, así `load_model_artifact` lo reconstruye sin reentrenar.
 
 `get_fitted_params` expone épocas seleccionadas, mejor época / pérdida de
 inner-val y tamaño de la red para que `run_evaluation`/`train.py` los logueen.
-El historial por época queda en `self.history_` (no se loguea en vivo: el harness
-no propaga un hook por época, pero queda inspeccionable tras el ajuste).
+El historial por época queda en `self.history_` (`train_loss` siempre; `val_loss` y
+`val_pearson` cuando hay inner-val de early stopping O cuando `run_evaluation` pasa el
+val del fold como set de MONITOREO vía `set_fit_context(eval_X=, eval_y=)`). Ese
+monitoreo es solo para la curva — nunca selecciona ni entrena sobre el val (sin
+leakage). `train.py` lo loguea por época a wandb (`curve/train_loss`, `curve/val_*`).
 """
 from __future__ import annotations
 
@@ -264,6 +267,24 @@ class MLPRegressor(BaseModel):
     def _apply_x(X: np.ndarray, x_mean: np.ndarray, x_std: np.ndarray) -> np.ndarray:
         return (np.asarray(X, dtype=np.float64) - x_mean) / x_std
 
+    def _monitor_val(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Val externo del fold (de `set_fit_context`) para MONITOREAR la curva por época.
+
+        Lo estandariza con los scalers de train ya ajustados (``x_mean_``/``y_mean_`` ...) y lo
+        devuelve como ``(Xv_std, yv_std)``, o ``None`` si no se pasó o no matchea. Es solo para
+        registrar ``val_loss``/``val_pearson`` por época: se usa con ``patience=None`` ⇒ no corta
+        ni restaura ⇒ no selecciona nada (sin leakage). Requiere los scalers ya calculados.
+        """
+        Xe = self._fit_context.get("eval_X")
+        ye = self._fit_context.get("eval_y")
+        if Xe is None or ye is None:
+            return None
+        Xe = np.asarray(Xe, dtype=np.float64)
+        ye = np.asarray(ye, dtype=np.float64).ravel()
+        if Xe.ndim != 2 or Xe.shape[0] == 0 or Xe.shape[1] != self.n_features_in_ or ye.size != Xe.shape[0]:
+            return None
+        return self._apply_x(Xe, self.x_mean_, self.x_std_), (ye - self.y_mean_) / self.y_std_
+
     # --- Loop de entrenamiento ----------------------------------------------
 
     def _build_net(self, in_dim: int, cfg: dict[str, Any]) -> _MLPNet:
@@ -416,8 +437,12 @@ class MLPRegressor(BaseModel):
             self.x_mean_, self.x_std_, self.y_mean_, self.y_std_ = self._compute_scalers(X, y, cfg)
             Xs = self._apply_x(X, self.x_mean_, self.x_std_)
             ys = (y - self.y_mean_) / self.y_std_
+            # Val del fold (si run_evaluation lo pasó) SOLO para la curva por época: patience=None
+            # y restore_best=False ⇒ no corta ni restaura ⇒ la red final es idéntica (sin leakage).
+            mon = self._monitor_val()
+            Xv, yv = mon if mon is not None else (None, None)
             net, history, _, _ = self._train(
-                Xs, ys, None, None, cfg=cfg, max_epochs=cfg["max_epochs"], device=device
+                Xs, ys, Xv, yv, cfg=cfg, max_epochs=cfg["max_epochs"], device=device
             )
             self.net_ = net
             self.history_ = history

@@ -74,5 +74,5 @@ artifacts:
 wandb:
   project: maze-genomic-pred
   entity: null
-  mode: offline
+  mode: online
   tags: [mlp, nn, pytorch, GY, optimal, pearson-mse-loss, train2017, val2018]

@@ -35,8 +35,9 @@ def fold_predictions(
     preds = result.get("predictions") or []
     if not preds:
         raise ValueError(
-            "El resultado no trae 'predictions'. ¿run_evaluation viejo o caché v2? "
-            "Subí _METRICS_VERSION / recomputá (USE_CACHE=False)."
+            "El resultado no trae 'predictions'. ¿caché viejo, de antes de que "
+            "run_evaluation devolviera predicciones? Recomputá (USE_CACHE=False) o "
+            "borrá outputs/eval_cache."
         )
     cand = preds
     if role is not None:
@@ -120,11 +121,32 @@ def select_blend_alpha(
     return best_alpha, scores
 
 
-def average_predictions(yhats: list) -> np.ndarray:
-    """Promedio simple de una lista de vectores YA alineados (A4: ensemble de redes)."""
+def _zfit(yhat) -> tuple[float, float]:
+    """Media y desvío de un vector de predicción (desvío 0 -> 1, evita dividir por 0)."""
+    yhat = np.asarray(yhat, dtype=float)
+    mu, sd = float(np.mean(yhat)), float(np.std(yhat))
+    return mu, (sd if sd > 1e-12 else 1.0)
+
+
+def _zapply(yhat, params: tuple[float, float]) -> np.ndarray:
+    mu, sd = params
+    return (np.asarray(yhat, dtype=float) - mu) / sd
+
+
+def average_predictions(yhats: list, *, standardize: bool = False) -> np.ndarray:
+    """Promedio de una lista de vectores YA alineados (A4: ensemble de redes).
+
+    Con ``standardize=True`` z-scorea cada predictor por su propia media/desvío ANTES de
+    promediar: necesario si los modelos tienen escalas dispares (p.ej. MLP con
+    ``loss=pearson``), porque si no el de mayor varianza domina el promedio y el "ensemble"
+    colapsa a ese modelo. No usa el target ⇒ no introduce leakage.
+    """
     if not yhats:
         raise ValueError("average_predictions recibió una lista vacía.")
-    return np.mean(np.vstack([np.asarray(y, dtype=float).ravel() for y in yhats]), axis=0)
+    arrs = [np.asarray(y, dtype=float).ravel() for y in yhats]
+    if standardize:
+        arrs = [_zapply(a, _zfit(a)) for a in arrs]
+    return np.mean(np.vstack(arrs), axis=0)
 
 
 def paired_bootstrap_diff(
@@ -159,4 +181,89 @@ def paired_bootstrap_diff(
         else:
             lo = hi = float("nan")
         out[name] = {"point": point, "lo": float(lo), "hi": float(hi), "samples": d}
+    return out
+
+
+def bootstrap_table(
+    y_true,
+    preds_by_name: dict[str, Any],
+    metrics: dict[str, Callable],
+    *,
+    group=None,
+    n_boot: int = 2000,
+    alpha: float = 0.05,
+    seed: int = 0,
+    n: int | None = None,
+    standardize: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, np.ndarray]]]:
+    """IC bootstrap de varias predicciones YA alineadas, en el formato de los gráficos.
+
+    ``preds_by_name = {nombre: y_pred}`` (todas alineadas al mismo ``y_true``/``group``).
+    Corre `bootstrap_ci` por modelo con la MISMA ``seed`` y ``group`` ⇒ las diferencias
+    ``muestras_x − muestras_ref`` quedan pareadas (mismo resample). Devuelve:
+
+    - ``rows``: lista tidy ``[{model, metric, point, lo, hi, n}]`` (igual que ``evaluate_model``)
+      ⇒ se arma un DataFrame y se pasa a :func:`src.eval.report_plots.plot_ci` / tablas.
+    - ``samples_by_model``: ``{nombre: {metrica: muestras}}`` ⇒ :func:`plot_box` /
+      :func:`plot_paired_diff`.
+
+    Con ``standardize=True`` z-scorea cada predictor por su propia media/desvío antes de las
+    métricas: pone a todos en escala comparable (útil cuando hay modelos de escala arbitraria,
+    p.ej. MLP con ``loss=pearson``). Pearson y matching20 son invariantes; RMSE/R² pasan a
+    escala estandarizada (no en unidades del target ⇒ solo orientativos). No usa el target.
+
+    Útil para los ensembles del notebook (A3/A4), donde el "modelo" es un vector de
+    predicciones combinado (blend, promedio) que no pasa por `run_evaluation`.
+    """
+    n = int(np.size(np.asarray(y_true))) if n is None else int(n)
+    rows: list[dict[str, Any]] = []
+    samples_by_model: dict[str, dict[str, np.ndarray]] = {}
+    for name, yhat in preds_by_name.items():
+        if standardize:
+            yhat = _zapply(yhat, _zfit(yhat))
+        b = bootstrap_ci(y_true, yhat, metrics, group=group, n_boot=n_boot, alpha=alpha, seed=seed)
+        s: dict[str, np.ndarray] = {}
+        for m, fn in metrics.items():
+            rows.append({
+                "model": name, "metric": m,
+                "point": float(fn(y_true, yhat)),
+                "lo": float(b[m]["lo"]), "hi": float(b[m]["hi"]), "n": n,
+            })
+            s[m] = b[m]["samples"]
+        samples_by_model[name] = s
+    return rows, samples_by_model
+
+
+def paired_diff_summary(
+    samples_by_model: dict[str, dict[str, np.ndarray]],
+    ref: str,
+    metrics,
+    *,
+    alpha: float = 0.05,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Resumen de ``(modelo − ref)`` por métrica desde las muestras pareadas (texto/significancia).
+
+    Mismo criterio que las celdas pareadas del notebook: IC95% de la resta sobre el mismo
+    resample; si no cruza 0, la diferencia es significativa. Devuelve
+    ``{modelo: {metrica: {"delta", "lo", "hi", "sig"}}}`` (excluye la referencia).
+    """
+    lo_q, hi_q = 100 * alpha / 2, 100 * (1 - alpha / 2)
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for name, s in samples_by_model.items():
+        if name == ref:
+            continue
+        per: dict[str, dict[str, Any]] = {}
+        for m in metrics:
+            sx = np.asarray(s[m], dtype=float)
+            sr = np.asarray(samples_by_model[ref][m], dtype=float)
+            k = min(len(sx), len(sr))
+            d = (sx[:k] - sr[:k])
+            d = d[np.isfinite(d)]
+            if d.size:
+                lo, hi = np.nanpercentile(d, [lo_q, hi_q])
+                per[m] = {"delta": float(np.mean(d)), "lo": float(lo), "hi": float(hi),
+                          "sig": bool(lo > 0 or hi < 0)}
+            else:
+                per[m] = {"delta": float("nan"), "lo": float("nan"), "hi": float("nan"), "sig": False}
+        out[name] = per
     return out
