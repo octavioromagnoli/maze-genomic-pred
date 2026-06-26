@@ -22,6 +22,7 @@ import numpy as np
 
 from src.training.save_model import save_model_artifact
 from src.training.run import run_evaluation
+from src.training.run_multitask import run_multitask_evaluation
 from src.utils.config import load_config, set_nested
 from src.utils.seed import set_seed
 
@@ -85,6 +86,126 @@ def print_ci(per_fold: list[dict]) -> None:
                 print(f"    {m:>10}: {point:.4f}  IC [{f[f'{m}_lo']:.4f}, {f[f'{m}_hi']:.4f}]")
 
 
+def print_multitask_fold_table(per_fold: list[dict]) -> None:
+    """Tabla de folds multitask: una fila por (fold, trait)."""
+    if not per_fold:
+        print("  (sin folds)")
+        return
+    cols = ["fold", "trait", "role", "val_year", "n_train", "n_val", "pearson_r", "rmse", "r2", "matching20"]
+    header = "  " + "  ".join(f"{c:>10}" for c in cols)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for f in per_fold:
+        row = []
+        for c in cols:
+            v = f.get(c, "")
+            row.append(f"{v:>10.4f}" if isinstance(v, float) else f"{str(v):>10}")
+        print("  " + "  ".join(row))
+
+
+def log_multitask_results(run, results: dict, config: dict, seed: int, save_model: bool) -> None:
+    """Logging trait-aware del flujo multitask (aislado de la ruta single-task)."""
+    import wandb
+
+    targets = results["targets"]
+    per_fold = results["per_fold"]
+    print(
+        f"[train] MULTITASK targets={targets} env={results['env']} "
+        f"n_obs={results['n_obs']} n_lines={results['n_lines']} "
+        f"(test final {results['holdout_test_year']} excluido del dev)"
+    )
+    print_multitask_fold_table(per_fold)
+
+    # Resumen por trait + headline GY -> run.summary (pearson_r_GY lo lee el sweep).
+    print("[train] resumen (val) por trait:")
+    for k, v in results["summary"].items():
+        print(f"    {k}: {v}")
+        run.summary[k] = v
+
+    # IC con nombres limpios por trait (split fijo => un fold por trait).
+    n_folds = len({f.get("fold") for f in per_fold})
+    if n_folds == 1:
+        for f in per_fold:
+            trait = f.get("trait")
+            for met in ("pearson_r", "rmse", "r2", "matching20"):
+                if f"{met}_lo" in f:
+                    run.summary[f"{trait}/{met}_lo"] = f[f"{met}_lo"]
+                    run.summary[f"{trait}/{met}_hi"] = f[f"{met}_hi"]
+
+    # Tabla de folds como artefacto visual (unión de claves por si algún trait no
+    # trae IC, p.ej. <2 válidos).
+    if per_fold:
+        cols = list(dict.fromkeys(k for f in per_fold for k in f))
+        table = wandb.Table(columns=cols)
+        for f in per_fold:
+            table.add_data(*[f.get(c) for c in cols])
+        run.log({"folds": table})
+
+    # Histogramas de bootstrap por (trait, métrica).
+    for entry in results.get("bootstrap", []):
+        prefix = f"boot/{entry.get('trait')}"
+        hist = {}
+        for name, samples in entry.items():
+            if name in ("fold", "trait"):
+                continue
+            s = np.asarray(samples, dtype=float)
+            s = s[np.isfinite(s)]
+            if s.size:
+                hist[f"{prefix}/{name}"] = wandb.Histogram(s)
+        if hist:
+            run.log(hist)
+
+    # Learning curves por época (train_loss + val_pearson_<trait>).
+    curves = results.get("histories", [])
+    for entry in curves:
+        hist_rows = entry.get("history") or []
+        if not hist_rows:
+            continue
+        prefix = "curve" if len(curves) == 1 else f"curve/fold{entry['fold']}"
+        step_metric = f"{prefix}/epoch"
+        run.define_metric(step_metric)
+        run.define_metric(f"{prefix}/*", step_metric=step_metric)
+        for rec in hist_rows:
+            payload = {
+                f"{prefix}/{k}": v for k, v in rec.items()
+                if k != "epoch" and isinstance(v, (int, float)) and not isinstance(v, bool)
+            }
+            if payload:
+                payload[step_metric] = int(rec.get("epoch", 0))
+                run.log(payload)
+
+    # Modelo entrenado como Artifact (si el config lo pide).
+    if save_model and results.get("models"):
+        fold0 = results["models"][0]
+        val_metrics = {
+            f"{f.get('trait')}/pearson_r": f["pearson_r"]
+            for f in per_fold
+            if f.get("fold") == fold0["fold"] and "pearson_r" in f
+        }
+        fitted_params = fold0.get("fitted_params") or {}
+        if fitted_params:
+            print(f"[train] estimaciones del modelo: {fitted_params}")
+            for k, v in fitted_params.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    run.summary[k] = v
+        art_cfg = config.get("artifacts", {})
+        art_name = art_cfg.get("name") or (config.get("experiment", {}).get("name") or "model").replace("_", "-")
+        art_dir = save_model_artifact(
+            fold0["model"],
+            name=art_name,
+            model_name=config.get("model", {}).get("name"),
+            train_years=fold0["train_years"],
+            target="+".join(targets),
+            env=results["env"],
+            seed=seed,
+            val_metrics=val_metrics,
+            fitted_params=fitted_params,
+            run=run,
+            aliases=tuple(art_cfg.get("aliases", ["latest"])),
+        )
+        print(f"[train] modelo guardado en {art_dir} (+ wandb Artifact '{art_name}')")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Entrenamiento + CV con logging a wandb.")
     parser.add_argument("--config", required=True, help="Ruta al YAML del experimento.")
@@ -124,6 +245,18 @@ def main() -> None:
     save_model = bool(art_cfg.get("save_model", False))
 
     print(f"[train] experimento={config.get('experiment', {}).get('name')} seed={seed} wandb_mode={mode}")
+
+    # Dispatch multitask: una red, varias cabezas (métricas por trait). La ruta
+    # single-task de abajo queda intacta. El logging multitask vive en su propio helper.
+    if config.get("model", {}).get("name") == "mlp_multitask":
+        results = run_multitask_evaluation(
+            config, log_fn=make_wandb_logger(run), return_models=save_model
+        )
+        log_multitask_results(run, results, config, seed, save_model)
+        run.finish()
+        print("[train] corrida finalizada. Si mode=offline, sincronizá con: wandb sync")
+        return
+
     results = run_evaluation(config, log_fn=make_wandb_logger(run), return_models=save_model)
 
     # Resumen a stdout + wandb.summary.

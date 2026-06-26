@@ -135,7 +135,12 @@ def temporal_inner_split(years: np.ndarray | None) -> tuple[np.ndarray, np.ndarr
 
 
 class _MLPNet(nn.Module):
-    """Red feed-forward: [Dropout entrada] -> bloques (Linear[, BN], act, Dropout) -> Linear(1)."""
+    """Red feed-forward: [Dropout entrada] -> bloques (Linear[, BN], act, Dropout) -> Linear(out_dim).
+
+    ``out_dim`` (default 1) define el ancho de la cabeza de salida. Con ``out_dim=1``
+    el forward hace squeeze a ``(n,)`` (ruta single-task, comportamiento idéntico al
+    histórico); con ``out_dim>1`` devuelve ``(n, out_dim)`` para el caso multitask.
+    """
 
     def __init__(
         self,
@@ -146,6 +151,7 @@ class _MLPNet(nn.Module):
         input_dropout: float,
         activation: str,
         batchnorm: bool,
+        out_dim: int = 1,
     ) -> None:
         super().__init__()
         act_cls = _ACTIVATIONS.get(activation)
@@ -153,6 +159,7 @@ class _MLPNet(nn.Module):
             raise ValueError(
                 f"activation desconocida: {activation!r}. Disponibles: {sorted(_ACTIVATIONS)}."
             )
+        self.out_dim = int(out_dim)
         layers: list[nn.Module] = []
         if input_dropout and input_dropout > 0:
             layers.append(nn.Dropout(input_dropout))
@@ -165,11 +172,12 @@ class _MLPNet(nn.Module):
             if dropout and dropout > 0:
                 layers.append(nn.Dropout(dropout))
             prev = h
-        layers.append(nn.Linear(prev, 1))
+        layers.append(nn.Linear(prev, self.out_dim))
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze(-1)
+        out = self.net(x)
+        return out.squeeze(-1) if self.out_dim == 1 else out
 
 
 class MLPRegressor(BaseModel):
