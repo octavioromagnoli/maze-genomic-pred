@@ -13,6 +13,7 @@ from src.data.preprocess import build_preprocessor
 from src.models.base import BaseModel
 from src.models.dummy import MeanPredictor
 from src.models.gblup import GBLUP
+from src.models.gblup_residual import GBLUPResidualRegressor
 from src.models.mlp import MLPRegressor
 from src.models.mlp_multitask import MLPMultitaskRegressor
 from src.models.xgb import XGBoostRegressor
@@ -20,6 +21,7 @@ from src.models.xgb import XGBoostRegressor
 REGISTRY: dict[str, type[BaseModel]] = {
     "mean_predictor": MeanPredictor,
     "gblup": GBLUP,
+    "gblup_residual": GBLUPResidualRegressor,
     "xgboost": XGBoostRegressor,
     "mlp": MLPRegressor,
     "mlp_multitask": MLPMultitaskRegressor,
