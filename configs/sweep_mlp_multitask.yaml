@@ -1,0 +1,96 @@
+# Sweep BAYESIANO del MLP MULTITASK (GY+PH+AD), optimizando PEARSON DE GY DIRECTAMENTE
+# (pearson_r_GY), NO el promedio simple de los traits. La red minimiza la Pearson loss
+# enmascarada y ponderada (clavada en el config base como loss: pearson).
+#
+# SELECCIÓN HONESTA: train 2017 -> val 2018 (clavado en el config base). Se elige el mejor HP
+# sobre 2018 sin tocar 2019 -> sin winner's curse sobre el set de reporte. El reporte final
+# (reentrenar 2017+2018 -> 2019, comparado contra GBLUP por trait y el MLP univariado) es un
+# paso posterior en el notebook con los HP ganadores; 2020 sellado.
+#
+# Métrica: pearson_r_GY (Pearson de GY en val 2018, regla 5), MAXIMIZAR. Con el split fijo hay
+# un único fold de scoring por trait, así que pearson_r_GY == Pearson de GY 2018. train.py lo
+# deja en run.summary (vía log_multitask_results), que es lo que lee el controller. NO poner
+# cv.* ni data.* acá (reglas 2 y 3): el split y los traits viven en el config base.
+#
+# Además de arquitectura/optimización se barren los PESOS AUXILIARES de la loss
+# (model.params.loss_weights.PH / .AD): el peso de GY queda anclado en 1.0 (config base) y el
+# sweep busca cuánta señal de PH/AD ayuda a GY. set_nested ya soporta las claves anidadas.
+#
+# max_epochs SÍ se barre: con un solo año de train (2017) no hay inner-split temporal, así que
+# la red no puede early-stoppear -> el número de épocas es un HP (como n_estimators en XGBoost).
+#
+# Uso:
+#   wandb login                                   # una vez (controller online)
+#   wandb sweep configs/sweep_mlp_multitask.yaml  # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en tmux
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_mlp_multitask_pearsonGY_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 200
+
+metric:
+  name: pearson_r_GY
+  goal: maximize
+
+parameters:
+  # --- arquitectura ---
+  model.params.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [512]
+      - [128, 64]
+      - [256, 128]
+      - [512, 256]
+      - [256, 128, 64]
+      - [2048, 1024, 512, 256]
+  model.params.activation:
+    values: [relu, gelu, leaky_relu, elu, tanh]
+  model.params.batchnorm:
+    values: [true, false]
+  # --- regularización (clave en p >> n) ---
+  model.params.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- optimización ---
+  model.params.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.batch_size:
+    values: [0, 32, 64, 128]      # 0 = full-batch (r sobre todo el train)
+  model.params.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 400
+  # --- pesos auxiliares de la loss (GY anclado en 1.0 en el config base) ---
+  model.params.loss_weights.PH:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+  model.params.loss_weights.AD:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+
+# --config fijo (sin ${args}): argparse de train.py solo ve --config y los HP barridos llegan
+# por wandb.config (merge dot-notation en train.py).
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_mlp_multitask_2017_to_2018.yaml

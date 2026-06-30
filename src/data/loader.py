@@ -23,13 +23,19 @@ ENVIRONMENTS = ("optimal", "drought")
 
 @dataclass
 class ModelingArrays:
-    """Arrays alineados 1:1 por observación."""
+    """Arrays alineados 1:1 por observación.
+
+    Los campos multitask ``Y``/``Y_mask`` son opcionales (default ``None``): solo
+    los puebla `to_modeling_arrays_multitask`. La ruta single-task (`y` 1D) no los usa.
+    """
 
     X: np.ndarray        # (n_obs, n_snps) genotipo por observación
     y: np.ndarray        # (n_obs,) target
     year: np.ndarray     # (n_obs,) año (split temporal)
     line_id: np.ndarray  # (n_obs,) GID (agrupar por línea)
     env: np.ndarray      # (n_obs,) ambiente
+    Y: np.ndarray | None = None       # (n_obs, n_targets) multitask, faltantes -> 0
+    Y_mask: np.ndarray | None = None  # (n_obs, n_targets) bool: True = dato real
 
 
 @dataclass
@@ -74,6 +80,97 @@ class Dataset:
             year=np.concatenate([b[2] for b in blocks]),
             line_id=np.concatenate([b[3] for b in blocks]),
             env=np.concatenate([b[4] for b in blocks]),
+        )
+
+    def _block_multitask(self, targets: list[str], env: str):
+        """Arrays multitask para un ambiente: varias columnas wide + máscara + join.
+
+        Espeja `_block`, pero conserva una fila por (GID, Year) si **al menos un**
+        trait fue medido (no exige todos): los faltantes se enmascaran. `Y_mask`
+        marca True donde había dato real (antes de rellenar los NaN con 0).
+        """
+        cols = [f"{t}_{env.title()}" for t in targets]  # p.ej. [GY_Optimal, PH_Optimal, AD_Optimal]
+        sub = self.pheno[["GID", "Year", *cols]]
+        sub = sub[sub[cols].notna().any(axis=1)]  # fila viva si hay >=1 trait medido
+        row_of_gid = {g: i for i, g in enumerate(self.gid_index)}
+        rows = sub["GID"].map(row_of_gid)
+        sub = sub[rows.notna()]
+        rows = rows[rows.notna()].astype(int).to_numpy()
+        Y_raw = sub[cols].to_numpy(dtype=float)       # NaN donde el trait no se midió
+        Y_mask = ~np.isnan(Y_raw)                     # True = dato real (antes del fillna)
+        Y = np.nan_to_num(Y_raw, nan=0.0)             # faltantes -> 0 (evita NaN en tensores)
+        return (
+            self.G[rows],
+            Y,
+            Y_mask,
+            sub["Year"].to_numpy(dtype=int),
+            sub["GID"].to_numpy(),
+            np.full(len(sub), env, dtype=object),
+        )
+
+    def to_modeling_arrays_multitask(
+        self, targets: list[str], env: str | None = None
+    ) -> ModelingArrays:
+        """Arma los arrays de modelado multitask (varios traits a la vez).
+
+        `Y` queda con shape ``(n_obs, len(targets))`` en el orden de `targets`, con
+        los faltantes rellenados con 0; `Y_mask` (misma forma, bool) marca los datos
+        reales. `env` se comporta igual que en `to_modeling_arrays`: un ambiente, o
+        ``None`` apila ambos como observaciones separadas. `y` se setea al primer
+        target (compat incidental con código que espera el 1D).
+        """
+        envs = [env] if env else list(ENVIRONMENTS)
+        blocks = [self._block_multitask(targets, e) for e in envs]
+        Y = np.concatenate([b[1] for b in blocks])
+        return ModelingArrays(
+            X=np.concatenate([b[0] for b in blocks]),
+            y=Y[:, 0],
+            year=np.concatenate([b[3] for b in blocks]),
+            line_id=np.concatenate([b[4] for b in blocks]),
+            env=np.concatenate([b[5] for b in blocks]),
+            Y=Y,
+            Y_mask=np.concatenate([b[2] for b in blocks]),
+        )
+
+
+    def to_modeling_arrays_multienv(
+        self, target: str = "GY", envs: list[str] | tuple[str, ...] = ENVIRONMENTS
+    ) -> ModelingArrays:
+        """Arma arrays multitask **multi-AMBIENTE**: un trait, varios ambientes como cabezas.
+
+        A diferencia de `to_modeling_arrays_multitask` (varios traits en UN ambiente,
+        o ambos ambientes apilados como observaciones separadas), acá hay UNA fila por
+        ``(GID, Year)`` y las columnas de ``Y`` son el MISMO trait en cada ambiente
+        (p.ej. ``[GY_Optimal, GY_Drought]``). Así una sola red comparte el tronco
+        genómico entre ambientes y una cabeza por ambiente especializa: el tronco se
+        estima con los datos de TODOS los ambientes (≈2x filas) y las cabezas no se
+        promedian entre ambientes débilmente correlacionados.
+
+        Conserva la fila si **al menos un** ambiente fue medido (los faltantes se
+        enmascaran). `Y` queda ``(n_obs, len(envs))`` en el orden de ``envs`` con los
+        faltantes en 0; `Y_mask` (bool, misma forma) marca los datos reales. `y` se
+        setea a la primera columna (compat con código que espera el 1D). Los nombres de
+        cabeza para alinear `loss_weights` son ``[f"{target}_{env}" for env in envs]``.
+        """
+        envs = list(envs)
+        cols = [f"{target}_{e.title()}" for e in envs]  # p.ej. [GY_Optimal, GY_Drought]
+        sub = self.pheno[["GID", "Year", *cols]]
+        sub = sub[sub[cols].notna().any(axis=1)]  # fila viva si hay >=1 ambiente medido
+        row_of_gid = {g: i for i, g in enumerate(self.gid_index)}
+        rows = sub["GID"].map(row_of_gid)
+        sub = sub[rows.notna()]
+        rows = rows[rows.notna()].astype(int).to_numpy()
+        Y_raw = sub[cols].to_numpy(dtype=float)       # NaN donde ese ambiente no se midió
+        Y_mask = ~np.isnan(Y_raw)                     # True = dato real (antes del fillna)
+        Y = np.nan_to_num(Y_raw, nan=0.0)             # faltantes -> 0 (evita NaN en tensores)
+        return ModelingArrays(
+            X=self.G[rows],
+            y=Y[:, 0],
+            year=sub["Year"].to_numpy(dtype=int),
+            line_id=sub["GID"].to_numpy(),
+            env=np.full(len(sub), "multienv", dtype=object),
+            Y=Y,
+            Y_mask=Y_mask,
         )
 
 

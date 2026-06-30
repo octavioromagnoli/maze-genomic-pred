@@ -19,18 +19,12 @@ def _default_cache_dir() -> Path:
     return Path(os.environ.get("EVAL_CACHE_DIR", "outputs/eval_cache"))
 
 
-# Versión del set de métricas de run_evaluation. Bumpear esto invalida el caché
-# viejo cuando cambia QUÉ se calcula (no solo los HP): v2 agrega matching20
-# (coincidence index al top-20%) al per_fold y su IC por bootstrap.
-_METRICS_VERSION = 2
-
-
 def results_cache_key(config: dict[str, Any], *, n_boot: int, alpha: float) -> str:
     """Hash estable de lo que determina el resultado de `run_evaluation`.
 
-    Incluye data/cv/model/seed + (n_boot, alpha) del bootstrap + la versión del set
-    de métricas (`_METRICS_VERSION`), para que agregar/cambiar una métrica invalide
-    los resultados cacheados automáticamente (sin borrar el caché a mano).
+    Incluye data/cv/model/preprocess/seed + (n_boot, alpha) del bootstrap. Si cambia
+    QUÉ métricas calcula `run_evaluation` (no solo los HP), borrá el caché a mano
+    (``outputs/eval_cache``) o corré con ``USE_CACHE=False`` para forzar el recómputo.
     """
     payload = {
         "data": config.get("data"),
@@ -40,7 +34,6 @@ def results_cache_key(config: dict[str, Any], *, n_boot: int, alpha: float) -> s
         "seed": config.get("seed"),
         "n_boot": int(n_boot),
         "alpha": float(alpha),
-        "metrics_v": _METRICS_VERSION,
     }
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]

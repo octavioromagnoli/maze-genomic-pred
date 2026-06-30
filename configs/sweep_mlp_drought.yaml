@@ -1,0 +1,75 @@
+# Sweep BAYESIANO de los HP del MLP para GY en SEQUÍA (drought), con la red optimizando
+# PEARSON (loss = 1 - r, clavada en el config base drought). Mismo espacio de búsqueda que
+# el sweep de optimal (sweep_mlp.yaml): drought se barre por separado porque puede preferir
+# HP distintos.
+#
+# SELECCIÓN HONESTA: train 2017 -> val 2018 (clavado en exp_mlp_2017_to_2018_drought.yaml).
+# El reporte final (reentrenar 2017+2018 -> val 2019, vs GBLUP-drought) es un paso posterior
+# en el notebook con los HP ganadores; 2020 sellado.
+#
+# Métrica: pearson_r_mean (Pearson de val 2018, regla 5), MAXIMIZAR. NO poner cv.* ni data.*
+# acá (reglas 2 y 3): el split y el ambiente viven en el config base.
+#
+# Uso:
+#   wandb sweep configs/sweep_mlp_drought.yaml            # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en tmux
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_mlp_pearson_2017_to_2018_drought
+program: scripts/train.py
+method: bayes
+run_cap: 200
+
+metric:
+  name: pearson_r_mean
+  goal: maximize
+
+parameters:
+  # --- arquitectura ---
+  model.params.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [512]
+      - [128, 64]
+      - [256, 128]
+      - [512, 256]
+      - [256, 128, 64]
+      - [2048, 1024, 512, 256]
+  model.params.activation:
+    values: [relu, gelu, leaky_relu, elu, tanh]
+  model.params.batchnorm:
+    values: [true, false]
+  # --- regularización (clave en p >> n) ---
+  model.params.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- optimización ---
+  model.params.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.batch_size:
+    values: [0, 32, 64, 128]      # 0 = full-batch (r sobre todo el train)
+  model.params.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 400
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_mlp_2017_to_2018_drought.yaml

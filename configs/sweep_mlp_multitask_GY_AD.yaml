@@ -1,0 +1,76 @@
+# Sweep BAYESIANO del MLP MULTITASK — ARM GY+AD (optimo). Optimiza Pearson de GY
+# DIRECTAMENTE (pearson_r_GY), NO el promedio de traits. SELECCION HONESTA: train 2017 ->
+# val 2018 (clavado en el config base). Reporte final (2017+2018 -> 2019 vs GBLUP/univariado)
+# en el notebook con el HP ganador. 2020 sellado. Detalle largo: ver configs/sweep_mlp_multitask.yaml.
+#
+# Ademas de arquitectura/optimizacion se barren los PESOS AUXILIARES de la loss (GY anclado
+# en 1.0 en el config base). max_epochs se barre (1 ano de train => sin early stopping).
+#
+# Uso:
+#   wandb sweep configs/sweep_mlp_multitask_GY_AD.yaml
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en tmux
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_mlp_multitask_GY_AD_pearsonGY_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 200
+
+metric:
+  name: pearson_r_GY
+  goal: maximize
+
+parameters:
+  # --- arquitectura ---
+  model.params.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [512]
+      - [128, 64]
+      - [256, 128]
+      - [512, 256]
+      - [256, 128, 64]
+      - [2048, 1024, 512, 256]
+  model.params.activation:
+    values: [relu, gelu, leaky_relu, elu, tanh]
+  model.params.batchnorm:
+    values: [true, false]
+  # --- regularizacion (clave en p >> n) ---
+  model.params.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- optimizacion ---
+  model.params.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.batch_size:
+    values: [0, 32, 64, 128]
+  model.params.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 400
+  # --- peso auxiliar de la loss (GY anclado en 1.0 en el config base) ---
+  model.params.loss_weights.AD:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_mlp_multitask_2017_to_2018_GY_AD.yaml

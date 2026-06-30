@@ -140,6 +140,7 @@ def run_evaluation(
     boot_samples: list[dict[str, Any]] = []
     trained: list[dict[str, Any]] = []
     histories: list[dict[str, Any]] = []
+    preds: list[dict[str, Any]] = []
     for i, (train_idx, val_idx, scoring) in enumerate(folds):
         # Guard duro: ninguna línea cruza train/val (regla 2).
         assert_no_line_leakage(train_idx, val_idx, arrays.line_id)
@@ -153,7 +154,16 @@ def run_evaluation(
 
         model = build_model(config)  # modelo fresco por fold (sin fuga de estado)
         # Contexto del fold para selección interna de HP temporal-aware (regla 3).
-        model.set_fit_context(year=arrays.year[train_idx], line_id=arrays.line_id[train_idx])
+        # eval_X/eval_y = val del fold SOLO para MONITOREAR la curva por época (lo usa el MLP
+        # sin early stopping para loguear val_loss/val_pearson). NUNCA selecciona ni entrena
+        # sobre el val (patience=None ⇒ no corta, no restaura) ⇒ sin leakage; el resto de los
+        # modelos lo ignora. Las líneas de val son disjuntas del train (assert de arriba).
+        model.set_fit_context(
+            year=arrays.year[train_idx],
+            line_id=arrays.line_id[train_idx],
+            eval_X=X_va,
+            eval_y=y_va,
+        )
         model.fit(X_tr, y_tr)
         y_hat = model.predict(X_va)
 
@@ -195,6 +205,17 @@ def run_evaluation(
             boot_samples.append({"fold": i, **{name: b["samples"] for name, b in ci.items()}})
 
         per_fold.append(m)
+        # Predicciones del fold (y_true/y_pred + line_id para alinear por línea): las
+        # consumen los ensembles del notebook (blend MLP+GBLUP, promedio de redes).
+        # Livianas (unos cientos de floats) ⇒ siempre on; train.py las ignora.
+        preds.append({
+            "fold": i,
+            "role": m["role"],
+            "val_year": m["val_year"],
+            "line_id": np.asarray(arrays.line_id[val_idx]),
+            "y_true": np.asarray(y_va, dtype=float).ravel(),
+            "y_pred": np.asarray(y_hat, dtype=float).ravel(),
+        })
         # Curva de entrenamiento por época, si el modelo la expone (el MLP guarda
         # history_ con train_loss y, cuando hubo inner-val, val_loss/val_pearson).
         # Permite graficar/loguear las learning curves; se cachea con los resultados.
@@ -237,6 +258,7 @@ def run_evaluation(
         "summary": summary,
         "bootstrap": boot_samples,
         "histories": histories,
+        "predictions": preds,
         "target": target,
         "env": env,
         "n_obs": int(arrays.X.shape[0]),

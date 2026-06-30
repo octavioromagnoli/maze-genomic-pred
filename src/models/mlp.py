@@ -21,13 +21,17 @@ Decisiones de diseño alineadas con las reglas del proyecto:
   default, se reentrena un modelo final desde cero con TODO el train del fold
   (p.ej. 2017+2018) por el número de épocas seleccionado. El val/test externo no
   se toca. Si hay un solo año en train, se entrena `max_epochs` fijo.
-- **Pérdida configurable: MSE o Pearson.** La regla 4 (BCE) aplica a
+- **Pérdida configurable: MSE, Pearson o Pearson+MSE.** La regla 4 (BCE) aplica a
   autoencoders que reconstruyen SNPs binarios; acá la salida es un fenotipo
   continuo. Por `params.loss` se elige entre ``"mse"`` (default, convención
-  segura) y ``"pearson"`` (minimiza ``1 - r``, optimizando directamente la
-  métrica de portada, regla 5). El r es invariante a transformaciones afines, así
-  que con la pérdida Pearson la salida queda sin calibrar en escala (RMSE/R² dejan
-  de ser informativos; el Pearson —lo que importa— no se ve afectado).
+  segura), ``"pearson"`` (minimiza ``1 - r``, optimizando directamente la
+  métrica de portada, regla 5) y ``"pearson_mse"``. El r es invariante a
+  transformaciones afines, así que con la pérdida Pearson pura la salida queda sin
+  calibrar en escala (RMSE/R² dejan de ser informativos; el Pearson —lo que
+  importa— no se ve afectado). ``"pearson_mse"`` suma ``mse_weight·MSE`` (sobre el
+  target estandarizado): mantiene el ranking que da el término Pearson pero ancla
+  la escala, así RMSE/R² vuelven a ser informativos (``mse_weight`` regula el
+  trade-off; default 0.3).
 - **Reproducibilidad.** `random_state` siembra el RNG de torch dentro de `fit`
   (la seed global de `set_seed` no alcanza para fijar la inicialización de pesos
   de forma independiente por fold).
@@ -38,8 +42,11 @@ diagnóstico, así `load_model_artifact` lo reconstruye sin reentrenar.
 
 `get_fitted_params` expone épocas seleccionadas, mejor época / pérdida de
 inner-val y tamaño de la red para que `run_evaluation`/`train.py` los logueen.
-El historial por época queda en `self.history_` (no se loguea en vivo: el harness
-no propaga un hook por época, pero queda inspeccionable tras el ajuste).
+El historial por época queda en `self.history_` (`train_loss` siempre; `val_loss` y
+`val_pearson` cuando hay inner-val de early stopping O cuando `run_evaluation` pasa el
+val del fold como set de MONITOREO vía `set_fit_context(eval_X=, eval_y=)`). Ese
+monitoreo es solo para la curva — nunca selecciona ni entrena sobre el val (sin
+leakage). `train.py` lo loguea por época a wandb (`curve/train_loss`, `curve/val_*`).
 """
 from __future__ import annotations
 
@@ -97,7 +104,8 @@ _DEFAULTS: dict[str, Any] = {
     "weight_decay": 1e-4,
     "batch_size": 64,
     "max_epochs": 200,
-    "loss": "mse",            # "mse" | "pearson" (1 - r de Pearson, diferenciable)
+    "loss": "mse",            # "mse" | "pearson" (1 - r) | "pearson_mse" (1 - r + w·MSE)
+    "mse_weight": 0.3,        # peso del término MSE cuando loss="pearson_mse"
     "patience": None,         # None => sin early stopping
     "eval_scheme": "temporal",
     "refit_full_train": True,
@@ -127,7 +135,12 @@ def temporal_inner_split(years: np.ndarray | None) -> tuple[np.ndarray, np.ndarr
 
 
 class _MLPNet(nn.Module):
-    """Red feed-forward: [Dropout entrada] -> bloques (Linear[, BN], act, Dropout) -> Linear(1)."""
+    """Red feed-forward: [Dropout entrada] -> bloques (Linear[, BN], act, Dropout) -> Linear(out_dim).
+
+    ``out_dim`` (default 1) define el ancho de la cabeza de salida. Con ``out_dim=1``
+    el forward hace squeeze a ``(n,)`` (ruta single-task, comportamiento idéntico al
+    histórico); con ``out_dim>1`` devuelve ``(n, out_dim)`` para el caso multitask.
+    """
 
     def __init__(
         self,
@@ -138,6 +151,7 @@ class _MLPNet(nn.Module):
         input_dropout: float,
         activation: str,
         batchnorm: bool,
+        out_dim: int = 1,
     ) -> None:
         super().__init__()
         act_cls = _ACTIVATIONS.get(activation)
@@ -145,6 +159,7 @@ class _MLPNet(nn.Module):
             raise ValueError(
                 f"activation desconocida: {activation!r}. Disponibles: {sorted(_ACTIVATIONS)}."
             )
+        self.out_dim = int(out_dim)
         layers: list[nn.Module] = []
         if input_dropout and input_dropout > 0:
             layers.append(nn.Dropout(input_dropout))
@@ -157,11 +172,12 @@ class _MLPNet(nn.Module):
             if dropout and dropout > 0:
                 layers.append(nn.Dropout(dropout))
             prev = h
-        layers.append(nn.Linear(prev, 1))
+        layers.append(nn.Linear(prev, self.out_dim))
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze(-1)
+        out = self.net(x)
+        return out.squeeze(-1) if self.out_dim == 1 else out
 
 
 class MLPRegressor(BaseModel):
@@ -177,8 +193,11 @@ class MLPRegressor(BaseModel):
         weight_decay       : L2 de Adam (default 1e-4).
         batch_size         : tamaño de minibatch; <=0 o >= n => full-batch (default 64).
         max_epochs         : épocas máximas (default 200).
-        loss               : "mse" (default) | "pearson". Pérdida que minimiza el
-            optimizador; "pearson" minimiza ``1 - r`` (optimiza la portada, regla 5).
+        loss               : "mse" (default) | "pearson" | "pearson_mse". Pérdida que
+            minimiza el optimizador; "pearson" minimiza ``1 - r`` (optimiza la portada,
+            regla 5); "pearson_mse" suma ``mse_weight·MSE`` para recalibrar la escala.
+        mse_weight         : peso del término MSE en "pearson_mse" (default 0.3). Solo
+            se usa con esa pérdida; ignorado con "mse"/"pearson".
         patience           : int opcional. Si está, activa early stopping con un
             inner-val temporal (último año del train). Default: sin early stopping.
         eval_scheme        : "temporal" (default), único esquema soportado.
@@ -200,6 +219,7 @@ class MLPRegressor(BaseModel):
         cfg["activation"] = str(cfg["activation"]).lower()
         cfg["eval_scheme"] = str(cfg["eval_scheme"]).lower()
         cfg["loss"] = str(cfg["loss"]).lower()
+        cfg["mse_weight"] = float(cfg["mse_weight"])
         cfg["val_metric"] = str(cfg["val_metric"]).lower()
         cfg["batch_size"] = int(cfg["batch_size"])
         cfg["max_epochs"] = int(cfg["max_epochs"])
@@ -255,6 +275,24 @@ class MLPRegressor(BaseModel):
     def _apply_x(X: np.ndarray, x_mean: np.ndarray, x_std: np.ndarray) -> np.ndarray:
         return (np.asarray(X, dtype=np.float64) - x_mean) / x_std
 
+    def _monitor_val(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Val externo del fold (de `set_fit_context`) para MONITOREAR la curva por época.
+
+        Lo estandariza con los scalers de train ya ajustados (``x_mean_``/``y_mean_`` ...) y lo
+        devuelve como ``(Xv_std, yv_std)``, o ``None`` si no se pasó o no matchea. Es solo para
+        registrar ``val_loss``/``val_pearson`` por época: se usa con ``patience=None`` ⇒ no corta
+        ni restaura ⇒ no selecciona nada (sin leakage). Requiere los scalers ya calculados.
+        """
+        Xe = self._fit_context.get("eval_X")
+        ye = self._fit_context.get("eval_y")
+        if Xe is None or ye is None:
+            return None
+        Xe = np.asarray(Xe, dtype=np.float64)
+        ye = np.asarray(ye, dtype=np.float64).ravel()
+        if Xe.ndim != 2 or Xe.shape[0] == 0 or Xe.shape[1] != self.n_features_in_ or ye.size != Xe.shape[0]:
+            return None
+        return self._apply_x(Xe, self.x_mean_, self.x_std_), (ye - self.y_mean_) / self.y_std_
+
     # --- Loop de entrenamiento ----------------------------------------------
 
     def _build_net(self, in_dim: int, cfg: dict[str, Any]) -> _MLPNet:
@@ -292,11 +330,23 @@ class MLPRegressor(BaseModel):
             loss_fn = nn.MSELoss()
         elif cfg["loss"] == "pearson":
             loss_fn = pearson_loss
+        elif cfg["loss"] == "pearson_mse":
+            # 1 - r + w·MSE: el término Pearson manda el ranking (portada), el MSE
+            # ancla la escala (sobre el target ya estandarizado) ⇒ RMSE/R² vuelven a
+            # ser informativos. Reusa pearson_loss y nn.MSELoss.
+            _mse = nn.MSELoss()
+            _w = cfg["mse_weight"]
+
+            def loss_fn(pred, target):
+                return pearson_loss(pred, target) + _w * _mse(pred, target)
         else:
-            raise ValueError(f"loss desconocida: {cfg['loss']!r}. Disponibles: 'mse', 'pearson'.")
+            raise ValueError(
+                f"loss desconocida: {cfg['loss']!r}. Disponibles: 'mse', 'pearson', 'pearson_mse'."
+            )
         # La pérdida Pearson necesita >=2 muestras por batch (un batch de 1 da r
         # indefinido), igual que BatchNorm: en ambos casos se descarta la cola de 1.
-        drop_singleton = cfg["batchnorm"] or cfg["loss"] == "pearson"
+        # pearson_mse incluye el término Pearson ⇒ mismo cuidado.
+        drop_singleton = cfg["batchnorm"] or cfg["loss"] in ("pearson", "pearson_mse")
 
         Xt = torch.as_tensor(Xs, dtype=torch.float32, device=device)
         yt = torch.as_tensor(ys, dtype=torch.float32, device=device)
@@ -395,8 +445,12 @@ class MLPRegressor(BaseModel):
             self.x_mean_, self.x_std_, self.y_mean_, self.y_std_ = self._compute_scalers(X, y, cfg)
             Xs = self._apply_x(X, self.x_mean_, self.x_std_)
             ys = (y - self.y_mean_) / self.y_std_
+            # Val del fold (si run_evaluation lo pasó) SOLO para la curva por época: patience=None
+            # y restore_best=False ⇒ no corta ni restaura ⇒ la red final es idéntica (sin leakage).
+            mon = self._monitor_val()
+            Xv, yv = mon if mon is not None else (None, None)
             net, history, _, _ = self._train(
-                Xs, ys, None, None, cfg=cfg, max_epochs=cfg["max_epochs"], device=device
+                Xs, ys, Xv, yv, cfg=cfg, max_epochs=cfg["max_epochs"], device=device
             )
             self.net_ = net
             self.history_ = history

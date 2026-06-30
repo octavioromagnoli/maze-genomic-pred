@@ -1,0 +1,184 @@
+# C-β-VAE conjunto (PyTorch) — CONFIG BASE del sweep. SELECCIÓN HONESTA de HP:
+# train 2017 -> val 2018 (clavado acá). Se elige sobre 2018 sin tocar 2019, así no
+# hay winner's curse sobre el set de reporte. El reporte final (reentrenar 2017+2018
+# -> val 2019, comparado con GBLUP/MLP) se hace en el notebook con los HP ganadores;
+# 2020 queda sellado.
+#
+# Lo barre configs/sweep_cbeta_vae.yaml (HP en model.params.*). 
+#
+# El modelo tiene encoder COMPARTIDO entre una rama VAE (reparam + KL, decoder con
+# salida sigmoide + BCE por regla 4) y una cabeza de regresión (loss Pearson, regla 5).
+# Pérdida total: L = pearson(ŷ, y) + lambda_aux·(BCE(decoder, X) + beta·KL).
+#
+# OJO: este modelo NO usa el bloque `preprocess:`. La entrada X queda BINARIA {0,1}
+# (la rama de reconstrucción la necesita para la BCE); el target se estandariza
+# train-only DENTRO de fit (regla 1). Con UN solo año de train (2017) no hay
+# inner-split temporal, así que NO hay early stopping: max_epochs es un HP del sweep
+# y patience queda en null.
+
+experiment:
+  name: cbeta_vae_2017_to_2018
+  description: >
+    C-β-VAE conjunto para GY en ambiente optimo, train 2017 -> val 2018 para la
+    SELECCION de hiperparametros (inner honesto, sin tocar 2019). Encoder compartido
+    entre una rama VAE generativa (reconstruccion de SNPs con BCE + KL) y una cabeza
+    de regresion (loss Pearson). Optimiza el Pearson de GY en 2018. La rama generativa
+    se usa luego para data augmentation. 2019 queda para el reporte (reentrenando
+    2017+2018 en el notebook) y 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+model:
+  name: cbeta_vae
+  params:
+    # --- arquitectura (valores base; el sweep los pisa) ---
+    latent_dim: 32
+    encoder_hidden: [1024, 256]   # capas del encoder (decoder = espejo)
+    reg_hidden: [32]              # capas de la cabeza de regresion (vacio => Linear directo)
+    activation: gelu
+    dropout: 0.3657465337638734                  # dropout del encoder/decoder
+    reg_dropout: 0.025785111304970743              # dropout de la cabeza de regresion
+    batchnorm: false
+    # --- perdida combinada: L = pearson + lambda_aux*(BCE + beta*KL) ---
+    lambda_aux: 0.5872916744565583              # peso del bloque auxiliar (BCE + beta*KL)
+    beta: 0.10708495902414504                   # beta-VAE: peso de la KL (>1 => latente mas regularizado)
+    kl_anneal_epochs: 10          # 0 = sin annealing; >0 rampa beta_eff de 0 a beta
+    free_bits: 0                # piso de KL por dimension latente (0 = off)
+    denoising_p: 0.29025865992560473              # masking de bits de entrada (regulariza)
+    reg_loss: pearson_mse             # "pearson" (1 - r) | "pearson_mse" | "mse"
+    mse_weight: 0.8764067271965644               # solo si reg_loss=pearson_mse
+    # --- optimizacion ---
+    lr: 0.00024701517120287697
+    weight_decay: 0.000739429707849644
+    batch_size: 32                # el sweep barre batch_size (incluye full-batch = 0)
+    max_epochs: 188               # HP del sweep (no hay early stopping con 1 ano de train)
+    # --- seleccion interna de epocas (regla 3) ---
+    patience: null                # sin early stopping: con un solo ano no hay inner-split
+    val_metric: pearson
+    refit_full_train: true        # con patience=null es no-op
+    # --- escala / runtime ---
+    standardize_target: true      # con loss pearson da igual (r invariante a afines)
+    random_state: 575             # seed del RNG de torch (init de pesos); NO se barre
+    device: auto                  # usa GPU si hay (acelera el sweep), cae a cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false               # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [cbeta-vae, vae, nn, pytorch, sweep, select, train2017, val2018, GY, optimal, pearson-loss]
+
+
+
+
+
+
+# # C-β-VAE conjunto (PyTorch) — CONFIG BASE del sweep. SELECCIÓN HONESTA de HP:
+# # train 2017 -> val 2018 (clavado acá). Se elige sobre 2018 sin tocar 2019, así no
+# # hay winner's curse sobre el set de reporte. El reporte final (reentrenar 2017+2018
+# # -> val 2019, comparado con GBLUP/MLP) se hace en el notebook con los HP ganadores;
+# # 2020 queda sellado.
+# #
+# # Lo barre configs/sweep_cbeta_vae.yaml (HP en model.params.*). 
+# #
+# # El modelo tiene encoder COMPARTIDO entre una rama VAE (reparam + KL, decoder con
+# # salida sigmoide + BCE por regla 4) y una cabeza de regresión (loss Pearson, regla 5).
+# # Pérdida total: L = pearson(ŷ, y) + lambda_aux·(BCE(decoder, X) + beta·KL).
+# #
+# # OJO: este modelo NO usa el bloque `preprocess:`. La entrada X queda BINARIA {0,1}
+# # (la rama de reconstrucción la necesita para la BCE); el target se estandariza
+# # train-only DENTRO de fit (regla 1). Con UN solo año de train (2017) no hay
+# # inner-split temporal, así que NO hay early stopping: max_epochs es un HP del sweep
+# # y patience queda en null.
+
+# experiment:
+#   name: cbeta_vae_2017_to_2018
+#   description: >
+#     C-β-VAE conjunto para GY en ambiente optimo, train 2017 -> val 2018 para la
+#     SELECCION de hiperparametros (inner honesto, sin tocar 2019). Encoder compartido
+#     entre una rama VAE generativa (reconstruccion de SNPs con BCE + KL) y una cabeza
+#     de regresion (loss Pearson). Optimiza el Pearson de GY en 2018. La rama generativa
+#     se usa luego para data augmentation. 2019 queda para el reporte (reentrenando
+#     2017+2018 en el notebook) y 2020 sellado.
+
+# seed: 575
+
+# data:
+#   geno_csv: data/Geno_data.csv
+#   pheno_csv: data/Pheno_data.csv
+#   target: GY
+#   env: optimal
+
+# cv:
+#   scheme: fixed_temporal
+#   val_year: 2018            # inner-val de seleccion (honesto)
+#   train_years: [2017]       # solo 2017
+#   holdout_test_year: 2020   # 2020 fuera (intocable)
+#   enforce_disjoint_lines: true
+
+# model:
+#   name: cbeta_vae
+#   params:
+#     # --- arquitectura (valores base; el sweep los pisa) ---
+#     latent_dim: 32
+#     encoder_hidden: [2048, 1024, 256]   # capas del encoder (decoder = espejo)
+#     reg_hidden: [32]              # capas de la cabeza de regresion (vacio => Linear directo)
+#     activation: relu
+#     dropout: 0.09522476847739576                  # dropout del encoder/decoder
+#     reg_dropout: 0.3582102570749405              # dropout de la cabeza de regresion
+#     batchnorm: false
+#     # --- perdida combinada: L = pearson + lambda_aux*(BCE + beta*KL) ---
+#     lambda_aux: 0.23486954743804137               # peso del bloque auxiliar (BCE + beta*KL)
+#     beta: 0.2916994356083174                     # beta-VAE: peso de la KL (>1 => latente mas regularizado)
+#     kl_anneal_epochs: 50          # 0 = sin annealing; >0 rampa beta_eff de 0 a beta
+#     free_bits: 0.05                # piso de KL por dimension latente (0 = off)
+#     denoising_p: 0.260072025007665              # masking de bits de entrada (regulariza)
+#     reg_loss: pearson_mse             # "pearson" (1 - r) | "pearson_mse" | "mse"
+#     mse_weight: 0.9186574942560108               # solo si reg_loss=pearson_mse
+#     # --- optimizacion ---
+#     lr: 0.0003925026304476849
+#     weight_decay: 0.0013534786133099
+#     batch_size: 32                # el sweep barre batch_size (incluye full-batch = 0)
+#     max_epochs: 386               # HP del sweep (no hay early stopping con 1 ano de train)
+#     # --- seleccion interna de epocas (regla 3) ---
+#     patience: null                # sin early stopping: con un solo ano no hay inner-split
+#     val_metric: pearson
+#     refit_full_train: true        # con patience=null es no-op
+#     # --- escala / runtime ---
+#     standardize_target: true      # con loss pearson da igual (r invariante a afines)
+#     random_state: 575             # seed del RNG de torch (init de pesos); NO se barre
+#     device: auto                  # usa GPU si hay (acelera el sweep), cae a cpu
+
+# bootstrap:
+#   enabled: true
+#   n_boot: 1000
+#   alpha: 0.05
+
+# artifacts:
+#   save_model: false               # el sweep no guarda modelos; el final se reentrena aparte
+
+# wandb:
+#   project: maze-genomic-pred
+#   entity: null
+#   mode: online
+#   tags: [cbeta-vae, vae, nn, pytorch, sweep, select, train2017, val2018, GY, optimal, pearson-loss]
