@@ -1,0 +1,93 @@
+# MLP MULTITASK MULTI-AMBIENTE (PyTorch) — CONFIG BASE del sweep.
+#
+# un tronco no-lineal compartido sobre
+# los marcadores con DOS cabezas, una por ambiente (GY_optimal, GY_drought). El tronco se
+# estima con los datos de AMBOS ambientes (~2x filas) y cada cabeza especializa por ambiente.
+# Como GY_optimal y GY_drought correlacionan poco por linea (~0.12), separar cabezas (en vez
+# de apilar como una sola tarea) es clave: comparte representacion sin promediar ambientes
+# debilmente correlacionados.
+#
+# RESULTADO (IC95% pareado, cluster por linea, ensemble multi-seed; ver bitacora):
+#   - GY DROUGHT (portada acá): supera a GBLUP de forma SIGNIFICATIVA y ROBUSTA a seed,
+#     en 2018 (seleccion, Δpearson ~ +0.016*) Y en 2019 (reporte, Δpearson ~ +0.079*).
+#     La cabeza LINEAL no gana => la ventaja es de representacion NO-LINEAL compartida.
+#   - GY OPTIMAL: GBLUP es imbatible (la red no aporta); por eso la portada de este modelo
+#     es DROUGHT (cover_env: drought) y se reporta optimal solo como control.
+#
+# SELECCION HONESTA de HP: train 2017 -> val 2018 (clavado acá), sin tocar 2019 (regla 3).
+# El reporte final (reentrenar 2017+2018 -> 2019 vs GBLUP-drought) se hace en el notebook
+# con los HP ganadores; 2020 queda sellado. Lo barre configs/sweep_mlp_multienv.yaml
+# (HP en model.params.*). NO tocar cv.* ni data.* (reglas 2 y 3): el split vive aca.
+#
+# Con UN solo ano de train (2017) NO hay inner-split temporal -> sin early stopping:
+# max_epochs es un HP del sweep. patience: null.
+
+experiment:
+  name: mlp_multienv_GY_2017_to_2018
+  description: >
+    MLP multitask MULTI-AMBIENTE (PyTorch) para GY: tronco compartido + una cabeza por
+    ambiente (optimal, drought), entrenado con 2017 y validado en 2018 para la SELECCION de
+    hiperparametros (inner honesto, sin tocar 2019). El tronco aprovecha los datos de ambos
+    ambientes; supera a GBLUP en sequia de forma significativa y robusta. Portada = drought.
+    Sin early stopping (un solo ano de train): max_epochs es HP del sweep. 2019 reporte
+    (reentrenando 2017+2018 en el notebook), 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true            # un trait, varios ambientes como cabezas (NO usar data.targets)
+  target: GY                # trait unico
+  envs: [optimal, drought]  # una cabeza por ambiente (orden = columnas de Y)
+  cover_env: drought        # ambiente de PORTADA (pearson_r_GY del sweep = pearson de esta cabeza)
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# Estandarizacion train-only DENTRO de fit (regla 1; z-score de inputs por SNP y del target
+# por columna, ignorando enmascarados). Override de save/load (state_dict + arquitectura +
+# buffers mu/sigma). No se usa el bloque `preprocess:`.
+
+model:
+  name: mlp_multitask
+  params:
+    # --- arquitectura / regularizacion (valores base; el sweep los pisa) ---
+    hidden_dims: [128]          # tronco NO-LINEAL: la variante lineal ([]) NO supera a GBLUP
+    dropout: 0.5
+    input_dropout: 0.3
+    activation: relu
+    batchnorm: false
+    # --- optimizacion ---
+    lr: 0.0005
+    weight_decay: 0.001
+    batch_size: 64              # el sweep barre batch_size (incluye full-batch = 0)
+    max_epochs: 100             # HP del sweep (no hay early stopping con 1 ano de train)
+    # --- perdida = Pearson enmascarada + ponderada (pesos IGUALES: 2x al target no ayuda) ---
+    loss: pearson               # "pearson" | "pearson_mse"
+    loss_weights:               # L = sum_i w_i * (1 - r_i) por cabeza; claves = trait_ambiente
+      GY_optimal: 1.0
+      GY_drought: 1.0
+    patience: null              # sin early stopping: con un solo ano no hay inner-split
+    standardize_inputs: true
+    standardize_target: true    # z-score por columna, enmascarado (mu/sigma como buffers)
+    random_state: 575           # seed del RNG de torch (init de pesos); NO se barre
+    device: auto                # usa GPU si hay (acelera el sweep), cae a cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false             # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mlp, multitask, multienv, nn, pytorch, sweep, select, train2017, val2018, GY, optimal, drought, pearson-loss]

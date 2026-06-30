@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from src.data.loader import load_dataset
+from src.data.loader import ENVIRONMENTS, load_dataset
 from src.eval.metrics import (
     bootstrap_ci,
     coincidence_index,
@@ -55,16 +55,24 @@ def run_multitask_evaluation(
     boot_cfg = config.get("bootstrap", {})
     seed = int(config.get("seed", 575))
 
-    targets = list(data_cfg.get("targets") or [])
-    if not targets:
-        raise ValueError(
-            "run_multitask_evaluation necesita `data.targets` (lista de traits, p.ej. [GY, PH, AD])."
-        )
-
     # --- Carga + arrays multitask (Y, Y_mask) --------------------------------
     dataset = load_dataset(data_cfg["geno_csv"], data_cfg["pheno_csv"])
-    env = data_cfg.get("env")  # None => apila optimal + drought
-    arrays = dataset.to_modeling_arrays_multitask(targets=targets, env=env)
+    env = data_cfg.get("env")  # None => apila optimal + drought (solo modo trait-multitask)
+    if data_cfg.get("multienv"):
+        # Multi-AMBIENTE: UN trait, varios ambientes como cabezas (tronco compartido,
+        # una cabeza por ambiente). El loader arma Y=[target_env...] por (GID, Year).
+        target = data_cfg.get("target", "GY")
+        envs = list(data_cfg.get("envs") or list(ENVIRONMENTS))
+        arrays = dataset.to_modeling_arrays_multienv(target=target, envs=envs)
+        targets = [f"{target}_{e}" for e in envs]  # nombres de cabeza (= columnas de Y)
+    else:
+        targets = list(data_cfg.get("targets") or [])
+        if not targets:
+            raise ValueError(
+                "run_multitask_evaluation necesita `data.targets` (lista de traits, p.ej. "
+                "[GY, PH, AD]) o `data.multienv: true` con `data.target`/`data.envs`."
+            )
+        arrays = dataset.to_modeling_arrays_multitask(targets=targets, env=env)
 
     # --- Split(s) temporal(es) + disjuntos por línea (idéntico a single-task) -
     folds = _build_folds(cv_cfg, arrays.year, arrays.line_id)
@@ -186,8 +194,15 @@ def run_multitask_evaluation(
         )
         for k, v in s.items():
             summary[f"{trait}/{k}"] = v
-    # El sweep optimiza Pearson de GY DIRECTAMENTE (no el promedio simple de traits).
-    primary = "GY" if "GY" in targets else targets[0]
+    # El sweep optimiza Pearson de la PORTADA DIRECTAMENTE (no el promedio de traits).
+    # Multi-ambiente: la portada es el trait en el ambiente `cover_env` (default drought,
+    # el caso donde la red supera a GBLUP); trait-multitask: GY.
+    if data_cfg.get("multienv"):
+        primary = f"{data_cfg.get('target', 'GY')}_{data_cfg.get('cover_env', 'drought')}"
+        if primary not in targets:
+            primary = targets[0]
+    else:
+        primary = "GY" if "GY" in targets else targets[0]
     summary["pearson_r_GY"] = summary.get(f"{primary}/pearson_r_mean", float("nan"))
     log({f"summary/{k}": v for k, v in summary.items()})
 
