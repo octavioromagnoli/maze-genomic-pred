@@ -11,6 +11,7 @@ import numpy as np
 
 from src.data.preprocess import build_preprocessor
 from src.models.base import BaseModel
+from src.models.cbeta_vae import CBetaVAERegressor
 from src.models.dummy import MeanPredictor
 from src.models.gblup import GBLUP
 from src.models.gblup_residual import GBLUPResidualRegressor
@@ -25,6 +26,7 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "xgboost": XGBoostRegressor,
     "mlp": MLPRegressor,
     "mlp_multitask": MLPMultitaskRegressor,
+    "cbeta_vae": CBetaVAERegressor,
 }
 
 class PreprocessedModel(BaseModel):

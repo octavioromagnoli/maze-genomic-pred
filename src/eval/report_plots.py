@@ -143,3 +143,52 @@ def plot_metric_vs_param(df, param_by_model: Mapping[str, float],
     fig.suptitle(title or f"Métrica vs {xlabel} (banda = IC95%)", y=1.02, fontsize=12)
     fig.tight_layout()
     return fig
+
+
+def plot_allele_freq(maf_real: np.ndarray, maf_synth: np.ndarray, *,
+                     title: str | None = None, color: str = "tab:blue"):
+    """Scatter de frecuencia alélica por SNP real vs sintética (calidad de generación).
+
+    Cada punto es un SNP: ``x`` = frecuencia del alelo 1 en los datos reales, ``y`` = en
+    los sintéticos. La diagonal (rojo) es el ideal: cuanto más pegada, mejor reproduce la
+    generación la estructura marginal de los marcadores. El título reporta la correlación.
+    """
+    maf_real = np.asarray(maf_real, dtype=float).ravel()
+    maf_synth = np.asarray(maf_synth, dtype=float).ravel()
+    finite = np.isfinite(maf_real) & np.isfinite(maf_synth)
+    corr = float(np.corrcoef(maf_real[finite], maf_synth[finite])[0, 1]) if finite.sum() > 1 else float("nan")
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(maf_real[finite], maf_synth[finite], s=6, alpha=0.25, color=color)
+    ax.plot([0, 1], [0, 1], "r--", lw=1)
+    ax.set_xlabel("frecuencia alélica real")
+    ax.set_ylabel("frecuencia alélica sintética")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_title(title or f"MAF real vs sintética (r = {corr:.3f})")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def plot_dist_overlay(real: np.ndarray, synth: np.ndarray, *, label: str = "valor",
+                      bins: int = 40, title: str | None = None):
+    """Histogramas superpuestos (densidad) de una magnitud real vs sintética.
+
+    Para comparar, p.ej., la distribución de GY real contra la de los labels sintéticos,
+    o la accuracy de reconstrucción. Si la sintética cubre el soporte de la real sin
+    concentrarse en un modo, la generación es razonable.
+    """
+    real = np.asarray(real, dtype=float).ravel()
+    synth = np.asarray(synth, dtype=float).ravel()
+    real = real[np.isfinite(real)]
+    synth = synth[np.isfinite(synth)]
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.hist(real, bins=bins, density=True, alpha=0.5, label="real", color="tab:blue")
+    ax.hist(synth, bins=bins, density=True, alpha=0.5, label="sintético", color="tab:orange")
+    ax.set_xlabel(label)
+    ax.set_ylabel("densidad")
+    ax.set_title(title or f"Distribución de {label}: real vs sintético")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    return fig

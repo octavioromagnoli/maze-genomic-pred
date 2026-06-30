@@ -1,0 +1,85 @@
+# Sweep BAYESIANO del C-β-VAE conjunto, optimizando el PEARSON de GY en val 2018
+# (pearson_r_mean, métrica de portada — regla 5). Encoder compartido entre la rama
+# VAE (BCE + KL) y la cabeza de regresión; el sweep barre tanto la arquitectura como
+# los pesos de la pérdida combinada (lambda_aux, beta).
+#
+# Lanzar:  wandb sweep configs/sweep_cbeta_vae.yaml
+#          wandb agent <sweep_id>     (dentro de tmux)
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_cbeta_vae_pearson_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 200
+
+metric:
+  name: pearson_r_mean
+  goal: maximize
+
+parameters:
+  # --- arquitectura ---
+  model.params.latent_dim:
+    values: [16, 32, 64, 128, 256]
+  model.params.encoder_hidden:
+    values: [[512], [1024], [2048, 512], [1024, 256], [2048, 1024, 256]]
+  model.params.reg_hidden:
+    values: [[], [32], [64], [128], [128, 64]]
+  model.params.activation:
+    values: [relu, gelu, leaky_relu, elu, tanh]
+  model.params.batchnorm:
+    values: [true, false]
+  # --- regularización ---
+  model.params.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.reg_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.denoising_p:
+    distribution: uniform
+    min: 0.0
+    max: 0.3
+  model.params.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- pérdida combinada: L = pearson + lambda_aux*(BCE + beta*KL) ---
+  model.params.lambda_aux:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 10.0
+  model.params.beta:
+    distribution: log_uniform_values
+    min: 0.1
+    max: 10.0
+  model.params.kl_anneal_epochs:
+    values: [0, 10, 25, 50]
+  model.params.free_bits:
+    values: [0.0, 0.02, 0.05, 0.1]
+  model.params.reg_loss:
+    values: [pearson, pearson_mse]
+  model.params.mse_weight:
+    distribution: uniform
+    min: 0.1
+    max: 1.0
+  # --- optimización ---
+  model.params.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.batch_size:
+    values: [0, 32, 64, 128]
+  model.params.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 400
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_cbeta_vae_2017_to_2018.yaml
