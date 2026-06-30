@@ -3,10 +3,17 @@
 # cabeza cover_env=drought en val 2018). La red minimiza la Pearson loss enmascarada y
 # ponderada (loss: pearson, clavada en el config base).
 #
-# SELECCION HONESTA: train 2017 -> val 2018 (clavado en el config base). Se elige el mejor HP
-# sobre 2018 sin tocar 2019 -> sin winner's curse sobre el reporte. El reporte final
-# (reentrenar 2017+2018 -> 2019 vs GBLUP-drought) es un paso posterior en el notebook con los
-# HP ganadores; 2020 sellado. NO poner cv.* ni data.* aca (reglas 2 y 3): viven en el base.
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado en el config base). El reporte final
+# (reentrenar 2017+2018 -> 2019 vs GBLUP-drought) es un paso posterior en el notebook; 2020
+# sellado. NO poner cv.* ni data.* aca (reglas 2 y 3): viven en el base.
+#
+# !!! WINNER'S CURSE (importante) !!! `pearson_r_GY` es de UNA seed en val2018 -> ruidoso. El
+# "mejor del sweep" OVERFITTEA 2018 y NO generaliza bien a 2019 (entre HP, 2018 predice debil a
+# 2019; verificado: el top-1 single-seed da Δ2018 ns y solo +0.05 en 2019, mientras los HP BASE
+# regularizados + ensemble de 20 seeds dan +0.016* en 2018 y +0.079* en 2019, seed-estables).
+# => NO uses el mejor single-seed. Recipe robusto: HP base (config base) + ensemble multi-seed.
+# Si querés usar el sweep, RE-RANKEA el top-K por su ENSEMBLE de K seeds en val2018 (criterio
+# estable), no por el pearson single-seed. Ver la seccion A5 del notebook (celda "winner's curse").
 #
 # Se barre arquitectura/optimizacion y el PESO AUXILIAR del ambiente NO-portada
 # (model.params.loss_weights.GY_optimal): el peso de la cabeza drought (portada) queda anclado

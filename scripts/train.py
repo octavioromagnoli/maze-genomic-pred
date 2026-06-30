@@ -246,9 +246,10 @@ def main() -> None:
 
     print(f"[train] experimento={config.get('experiment', {}).get('name')} seed={seed} wandb_mode={mode}")
 
-    # Dispatch multitask: una red, varias cabezas (métricas por trait). La ruta
-    # single-task de abajo queda intacta. El logging multitask vive en su propio helper.
-    if config.get("model", {}).get("name") == "mlp_multitask":
+    # Dispatch multitask: una red (o un ensemble de redes), varias cabezas (métricas por
+    # trait). La ruta single-task de abajo queda intacta. El logging multitask vive en su
+    # propio helper. `ensemble_multitask` envuelve `mlp_multitask` y usa el mismo pipeline.
+    if config.get("model", {}).get("name") in ("mlp_multitask", "ensemble_multitask"):
         results = run_multitask_evaluation(
             config, log_fn=make_wandb_logger(run), return_models=save_model
         )

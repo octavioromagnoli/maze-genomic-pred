@@ -1,0 +1,79 @@
+# =========================================================================================
+# !!!  TEST FINAL EN 2020  —  CORRER UNA SOLA VEZ, AL CIERRE DEL PROYECTO  !!!
+# =========================================================================================
+# Entrena el ENSEMBLE en TODO el dev (2017+2018+2019) y predice 2020 (el holdout sellado).
+# NO correr hasta haber congelado los HP. Flujo correcto para no contaminar 2020:
+#   1) Elegir los HP de la red SIN tocar 2020, con el sweep ROBUSTO (ensemble):
+#        wandb sweep configs/sweep_mlp_multienv_ens.yaml   (selecciona por el pearson_r_GY DEL
+#        ENSEMBLE en val 2018; opcional: re-confirmar en train 2017+2018 -> val 2019).
+#   2) Pegar los HP ganadores en model.params.inner.* de ESTE archivo (abajo estan los HP base
+#      como placeholder).
+#   3) Correr: python scripts/train.py --config configs/exp_mlp_multienv_ens_GY_final_2020.yaml
+#      -> reentrena el ensemble en 2017+2018+2019 y reporta el pearson de la cabeza drought en 2020.
+# El numero de 2020 es la adjudicacion final (una sola mirada). Se compara contra GBLUP-drought
+# reentrenado igual en 2017+2018+2019 -> 2020 (configs/exp_gblup_*_drought con el mismo cv).
+
+experiment:
+  name: mlp_multienv_ens_GY_final_2020
+  description: >
+    TEST FINAL: ensemble de seeds del MLP multitask multi-ambiente (GY, cabezas optimal+drought)
+    reentrenado en TODO el dev (2017+2018+2019) y evaluado en 2020 (holdout sellado). HP de la red
+    fijados por el sweep robusto (ensemble) sin tocar 2020. Portada = drought.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2020             # TEST FINAL (sellado hasta el cierre)
+  train_years: [2017, 2018, 2019]   # TODO el dev
+  holdout_test_year: null    # 2020 ya es el val/test; no hay holdout adicional
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble_multitask
+  params:
+    n_models: 20              # ensemble grande para el modelo final (mas estable que en el sweep)
+    seed_step: 1000
+    inner:                    # <<< REEMPLAZAR por los HP ganadores del sweep ensemble >>>
+      hidden_dims: [128]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 100
+      loss: pearson
+      loss_weights:
+        GY_optimal: 1.0
+        GY_drought: 1.0
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 2000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: mlp-multienv-ens-gy-final-2020
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mlp, multitask, multienv, ensemble, nn, FINAL, test2020, GY, drought]
