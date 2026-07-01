@@ -1,0 +1,94 @@
+# ENSEMBLE de seeds del MLP MULTITASK (GY+PH+AD, ambiente OPTIMO) — CONFIG BASE del sweep de
+# SELECCION en 2019 (para congelar los HP del modelo FINAL de 2020).
+#
+# DIFERENCIA con exp_mlp_multitask_2017_to_2018.yaml (single-seed): aquel selecciona con train 2017
+# -> val 2018 (para el REPORTE en 2019) y evalua UNA sola red. ESTE selecciona con train 2017+2018
+# -> val 2019 (analogo honesto para predecir 2020: entrenar con TODO lo disponible antes del ultimo
+# anio de DEV y validar en ese ultimo anio) y evalua un ENSEMBLE de n_models seeds. 2019 sigue siendo
+# DEV; 2020 queda SELLADO. Con los HP ganadores de este sweep se llena
+# exp_mlp_multitask_ens_GY_final_2020.yaml (reentrena en 2017+2018+2019 -> 2020).
+#
+# POR QUE ENSEMBLE: el Pearson de UNA sola seed en el inner-val es ruidoso, asi que un sweep que
+# selecciona por ese numero overfittea el inner-val y no generaliza (winner's curse, verificado en el
+# multienv de este proyecto). Cada trial evalua el ENSEMBLE (no una seed) -> el pearson_r_GY que
+# optimiza el sweep es el del ensemble (estable) y el modelo final desplegado ES ese mismo ensemble.
+#
+# Tronco compartido predice GY+PH+AD (cabeza Linear(prev, 3)); portada = GY. HP de la red en
+# model.params.inner.* (los barre configs/sweep_mlp_multitask_ens_2017_2018_to_2019.yaml). El modelo
+# hace su estandarizacion train-only DENTRO de fit (regla 1). NO tocar cv.*/data.* (reglas 2 y 3):
+# el split y los traits viven aca.
+#
+# LOSS = PEARSON ENMASCARADA Y PONDERADA: L = sum_i w_i * (1 - r_i) por trait, usando solo las filas
+# con dato real (Y_mask). GY anclado en 1.0; el sweep busca cuanta senal de PH/AD ayuda a GY. Con dos
+# anios de train (2017+2018) no hay inner-split temporal -> NO hay early stopping: max_epochs es un HP
+# del sweep. patience: null.
+
+experiment:
+  name: mlp_multitask_ens_GY_2017_2018_to_2019
+  description: >
+    Ensemble de seeds (n_models) del MLP multitask para GY+PH+AD en ambiente optimo. Cada trial del
+    sweep evalua el ensemble (no una seed) -> seleccion de HP robusta para el modelo FINAL de 2020.
+    Train 2017+2018 -> val 2019 para la SELECCION. Portada = GY (pearson_r_GY del sweep = Pearson de
+    la cabeza GY DEL ENSEMBLE en val 2019). 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]     # multitask: lista de traits (orden = columnas de Y)
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+# OJO: este modelo hace su estandarizacion train-only DENTRO de fit (regla 1; z-score de inputs por
+# SNP y del target por columna, ignorando enmascarados) y overridea save/load (state_dict +
+# arquitectura + buffers mu/sigma). No se usa el bloque `preprocess:`.
+
+model:
+  name: ensemble_multitask
+  params:
+    n_models: 5               # seeds por trial (5 = buen balance robustez/costo; 3 si el sweep es caro)
+    seed_step: 1000           # seeds = inner.random_state + i*seed_step
+    inner:                    # HP de la RED (mlp_multitask); ESTO es lo que barre el sweep
+      # --- arquitectura / regularizacion (valores base; el sweep los pisa) ---
+      hidden_dims: [128]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      # --- optimizacion ---
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64              # el sweep barre batch_size (incluye full-batch = 0)
+      max_epochs: 100             # HP del sweep (no hay early stopping con train multi-anio sin inner-split)
+      # --- perdida = Pearson enmascarada + ponderada ---
+      loss: pearson               # "pearson" | "pearson_mse"
+      loss_weights:               # L = sum_i w_i * (1 - r_i); GY anclado en 1.0 (portada), PH/AD los barre el sweep
+        GY: 1.0
+        PH: 0.5
+        AD: 0.5
+      patience: null              # sin early stopping: no hay inner-split temporal
+      standardize_inputs: true
+      standardize_target: true    # z-score por columna, enmascarado (mu/sigma como buffers)
+      random_state: 575           # seed BASE del ensemble (las demas: +1000, +2000, ...); NO se barre
+      device: auto                # usa GPU si hay (acelera el sweep), cae a cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false             # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mlp, multitask, ensemble, nn, pytorch, sweep, select, train2017-2018, val2019, GY, PH, AD, optimal, pearson-loss, for-final-2020]

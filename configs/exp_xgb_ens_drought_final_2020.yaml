@@ -31,7 +31,7 @@ data:
 cv:
   scheme: fixed_temporal
   val_year: 2020             # TEST FINAL (sellado hasta el cierre)
-  train_years: [2017, 2018, 2019]   # TODO el dev
+  train_years: [2018,2019]   # TODO el dev
   holdout_test_year: null
   enforce_disjoint_lines: true
 
@@ -43,14 +43,14 @@ model:
     seed_step: 1000
     standardize: false        # XGB calibrado -> promedio crudo
     inner:                    # <<< HP ganadores del sweep XGB >>>
-      n_estimators: 366
+      n_estimators: 460
       max_depth: 6
-      learning_rate: 0.027324637541352947
-      subsample: 0.5182764716104041
-      colsample_bytree: 0.4244330441880756
-      reg_lambda: 0.004644153533366419
-      reg_alpha: 0.1
-      min_child_weight: 1
+      learning_rate: 0.20293262657796088
+      subsample: 0.9860610999637488
+      colsample_bytree: 0.30022643881048666
+      reg_lambda: 0.003579996327905915
+      reg_alpha: 1
+      min_child_weight: 5
       gamma: 1
       n_jobs: 1
       random_state: 575

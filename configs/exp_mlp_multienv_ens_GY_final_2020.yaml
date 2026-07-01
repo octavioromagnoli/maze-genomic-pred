@@ -33,7 +33,7 @@ data:
 cv:
   scheme: fixed_temporal
   val_year: 2020             # TEST FINAL (sellado hasta el cierre)
-  train_years: [2017, 2018, 2019]   # TODO el dev
+  train_years: [2018,2019]   # TODO el dev
   holdout_test_year: null    # 2020 ya es el val/test; no hay holdout adicional
   enforce_disjoint_lines: true
 
@@ -43,18 +43,18 @@ model:
     n_models: 20              # ensemble grande para el modelo final (mas estable que en el sweep)
     seed_step: 1000
     inner:                    # <<< HP ganadores del sweep ensemble >>>
-      hidden_dims: [128, 64]
-      dropout: 0.3425532803269893
-      input_dropout: 0.33039840147967453 
+      hidden_dims: [256]
+      dropout: 0.21111181788875455
+      input_dropout: 0.3933373395918424 
       activation: leaky_relu
       batchnorm: true
-      lr: 0.00021332013842473473
-      weight_decay: 0.006651372640244304
-      batch_size: 32
-      max_epochs: 193
+      lr: 0.0007039497713082323
+      weight_decay: 0.000020441270347213023
+      batch_size: 64
+      max_epochs: 237
       loss: pearson
       loss_weights:
-        GY_optimal: 0.9853909331216216
+        GY_optimal: 0.6630096028994725
         GY_drought: 1.0
       patience: null
       standardize_inputs: true

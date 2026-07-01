@@ -1,0 +1,88 @@
+# Sweep BAYESIANO ROBUSTO del MLP MULTITASK (GY+PH+AD, ambiente OPTIMO) — SELECCION EN 2019
+# (modelo FINAL 2020). Analogo multitask de sweep_mlp_multienv_ens_2017_2018_to_2019.yaml: misma
+# grilla de arquitectura/optimizacion en inner.*, pero barre los PESOS AUXILIARES por TRAIT
+# (loss_weights.PH / .AD) en vez del ambiente. Apunta al config base que entrena con 2017+2018 y
+# valida en 2019 (exp_mlp_multitask_ens_GY_2017_2018_to_2019.yaml).
+#
+# Cada trial evalua un ENSEMBLE de n_models seeds y optimiza el pearson_r_GY DEL ENSEMBLE (cabeza GY)
+# en val 2019 -> evita el winner's curse del single-seed. HP de la red en model.params.inner.*.
+#
+# PESOS AUXILIARES: GY anclado en 1.0 en el config base; el sweep busca cuanta senal de PH/AD ayuda a
+# GY (loss_weights.PH / .AD, ambos bajo inner). set_nested soporta las claves anidadas.
+#
+# POR QUE OTRO SWEEP: el sweep single-seed que ya esta selecciona en 2018 (para reportar 2019). Este
+# selecciona en 2019 (train 2017+2018), que es lo que hay que congelar para el modelo FINAL de 2020
+# (que luego reentrena en 2017+2018+2019). 2020 NUNCA se toca en la seleccion.
+#
+# COSTO: cada trial entrena n_models redes (~5x mas lento que el single-seed) -> run_cap acotado.
+# max_epochs sigue como HP (train multi-anio sin inner-split -> sin early stopping).
+#
+# Uso:
+#   wandb sweep configs/sweep_mlp_multitask_ens_2017_2018_to_2019.yaml       # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en tmux
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_mlp_multitask_ens_pearsonGY_2017_2018_to_2019
+program: scripts/train.py
+method: bayes
+run_cap: 60
+
+metric:
+  name: pearson_r_GY        # Pearson de la cabeza GY DEL ENSEMBLE en val 2019 (estable)
+  goal: maximize
+
+parameters:
+  # --- arquitectura de la RED interna (tronco NO-LINEAL; la lineal pierde contra GBLUP) ---
+  model.params.inner.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [128, 64]
+      - [256, 128]
+      - [256, 128, 64]
+  model.params.inner.activation:
+    values: [relu, gelu, leaky_relu, elu]
+  model.params.inner.batchnorm:
+    values: [true, false]
+  # --- regularizacion (clave en p >> n) ---
+  model.params.inner.dropout:
+    distribution: uniform
+    min: 0.1
+    max: 0.7
+  model.params.inner.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.inner.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- optimizacion ---
+  model.params.inner.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.inner.batch_size:
+    values: [0, 32, 64, 128]      # 0 = full-batch
+  model.params.inner.max_epochs:
+    distribution: int_uniform
+    min: 40
+    max: 300
+  # --- pesos auxiliares por trait (GY anclado en 1.0 en el config base) ---
+  model.params.inner.loss_weights.PH:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+  model.params.inner.loss_weights.AD:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_mlp_multitask_ens_GY_2017_2018_to_2019.yaml
