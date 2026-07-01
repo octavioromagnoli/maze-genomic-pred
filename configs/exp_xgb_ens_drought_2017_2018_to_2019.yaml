@@ -1,0 +1,73 @@
+# ENSEMBLE de seeds de XGBoost para GY en SEQUIA (drought) — CONFIG BASE del sweep de SELECCION
+# en 2019 (para congelar los HP del modelo FINAL de 2020).
+#
+# DIFERENCIA con exp_xgb_ens_drought_2017_to_2018.yaml: aquel selecciona con train 2017 -> val 2018
+# (para el REPORTE en 2019). ESTE selecciona con train 2017+2018 -> val 2019, que es el analogo
+# honesto para predecir 2020: entrenar con TODO lo disponible antes del ultimo anio de DEV y validar
+# en ese ultimo anio (2019). 2019 sigue siendo DEV; 2020 queda SELLADO. Con los HP ganadores de este
+# sweep se llena exp_xgb_ens_drought_final_2020.yaml (que reentrena en 2017+2018+2019 -> 2020).
+#
+# Cada trial evalua un ENSEMBLE de n_models XGB (seeds distintas) y optimiza el pearson_r_mean DEL
+# ENSEMBLE en val 2019 (estable, sin winner's curse). HP del XGB en model.params.inner.* (los barre
+# configs/sweep_xgb_ens_drought_2017_2018_to_2019.yaml). NO tocar cv.*/data.* (reglas 2 y 3).
+
+experiment:
+  name: xgb_ens_drought_2017_2018_to_2019
+  description: >
+    Ensemble de seeds de XGBoost (n_models) para GY en sequia, train 2017+2018 -> val 2019. Cada
+    trial del sweep evalua el ENSEMBLE (no una seed) -> seleccion robusta de HP para el modelo FINAL
+    de 2020 (sin winner's curse). Analogo de seleccion 2018->2019 pero corrido un anio para apuntar
+    a 2020. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+# SIN preprocesamiento: marcadores CRUDOS (como GBLUP y la red), por justicia en la comparacion.
+# OJO (testeado): el filtro `maf_threshold: 0.05` saca poquisimos SNPs y su efecto NO es robusto
+# entre anios -> NO se usa MAF aca (igual que en el config de seleccion 2018 y el final 2020).
+
+model:
+  name: ensemble
+  params:
+    inner_name: xgboost
+    n_models: 5                # XGB por trial (5 = balance robustez/costo)
+    seed_step: 1000            # seeds = inner.random_state + i*seed_step
+    standardize: false         # XGB esta calibrado -> promedio crudo (RMSE/R2 informativos)
+    inner:                     # HP del XGB; ESTO es lo que barre el sweep (inner.*)
+      n_estimators: 500
+      max_depth: 4
+      learning_rate: 0.05
+      subsample: 0.8
+      colsample_bytree: 0.5
+      reg_lambda: 1.0
+      reg_alpha: 0.0
+      min_child_weight: 1
+      gamma: 0.0
+      n_jobs: 1               # evita el segfault nativo con n_jobs=-1 (ver config XGB base)
+      random_state: 575       # seed BASE del ensemble (las demas: +1000, +2000, ...)
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [xgboost, ensemble, sweep, select, train2017-2018, val2019, GY, drought, for-final-2020]

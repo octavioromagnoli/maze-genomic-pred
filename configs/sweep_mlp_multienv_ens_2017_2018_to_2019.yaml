@@ -1,0 +1,78 @@
+# Sweep BAYESIANO ROBUSTO del MLP multitask multi-ambiente — SELECCION EN 2019 (modelo FINAL 2020).
+# Identico a sweep_mlp_multienv_ens.yaml (misma grilla de HP) salvo que apunta al config base que
+# entrena con 2017+2018 y valida en 2019 (exp_mlp_multienv_ens_GY_2017_2018_to_2019.yaml). Cada
+# trial evalua un ENSEMBLE de n_models seeds y optimiza el pearson_r_GY DEL ENSEMBLE (cabeza
+# drought) en val 2019 (evita el winner's curse del single-seed). HP de la red en inner.*.
+#
+# POR QUE OTRO SWEEP: el sweep que ya esta selecciona en 2018 (para reportar 2019). Este selecciona
+# en 2019 (train 2017+2018), que es lo que hay que congelar para el modelo FINAL de 2020 (que luego
+# reentrena en 2017+2018+2019). 2020 NUNCA se toca en la seleccion.
+#
+# COSTO: cada trial entrena n_models redes (5x mas lento que el single-seed) -> run_cap acotado.
+# Con dos anios de train (2017+2018) hay mas datos que en el sweep de 2018; max_epochs sigue como HP.
+#
+# Uso:
+#   wandb sweep configs/sweep_mlp_multienv_ens_2017_2018_to_2019.yaml        # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en tmux
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_mlp_multienv_ens_pearsonDrought_2017_2018_to_2019
+program: scripts/train.py
+method: bayes
+run_cap: 60
+
+metric:
+  name: pearson_r_GY        # Pearson de la cabeza drought DEL ENSEMBLE en val 2019 (estable)
+  goal: maximize
+
+parameters:
+  # --- arquitectura de la RED interna (tronco NO-LINEAL; la lineal pierde contra GBLUP) ---
+  model.params.inner.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [128, 64]
+      - [256, 128]
+      - [256, 128, 64]
+  model.params.inner.activation:
+    values: [relu, gelu, leaky_relu, elu]
+  model.params.inner.batchnorm:
+    values: [true, false]
+  # --- regularizacion (clave en p >> n) ---
+  model.params.inner.dropout:
+    distribution: uniform
+    min: 0.1
+    max: 0.7
+  model.params.inner.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.inner.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- optimizacion ---
+  model.params.inner.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.inner.batch_size:
+    values: [0, 32, 64, 128]      # 0 = full-batch
+  model.params.inner.max_epochs:
+    distribution: int_uniform
+    min: 40
+    max: 300
+  # --- peso auxiliar del ambiente NO-portada (drought anclado en 1.0 en el config base) ---
+  model.params.inner.loss_weights.GY_optimal:
+    distribution: uniform
+    min: 0.0
+    max: 1.5
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_mlp_multienv_ens_GY_2017_2018_to_2019.yaml

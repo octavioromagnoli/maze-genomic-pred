@@ -1,0 +1,76 @@
+# ENSEMBLE de seeds del MLP MULTITASK MULTI-AMBIENTE (GY) — CONFIG BASE del sweep de SELECCION en
+# 2019 (para congelar los HP del modelo FINAL de 2020).
+#
+# DIFERENCIA con exp_mlp_multienv_ens_GY_2017_to_2018.yaml: aquel selecciona con train 2017 -> val
+# 2018 (para el REPORTE en 2019). ESTE selecciona con train 2017+2018 -> val 2019, que es el analogo
+# honesto para predecir 2020: entrenar con TODO lo disponible antes del ultimo anio de DEV y validar
+# en ese ultimo anio (2019). 2019 sigue siendo DEV; 2020 queda SELLADO. Con los HP ganadores de este
+# sweep se llena exp_mlp_multienv_ens_GY_final_2020.yaml (reentrena en 2017+2018+2019 -> 2020).
+#
+# Cada trial entrena un ENSEMBLE de n_models seeds y optimiza el pearson_r_GY DEL ENSEMBLE (cabeza
+# drought) en val 2019 (estable, sin winner's curse). HP de la red en model.params.inner.* (los
+# barre configs/sweep_mlp_multienv_ens_2017_2018_to_2019.yaml). NO tocar cv.*/data.* (reglas 2 y 3).
+
+experiment:
+  name: mlp_multienv_ens_GY_2017_2018_to_2019
+  description: >
+    Ensemble de seeds (n_models) del MLP multitask multi-ambiente para GY (cabezas optimal +
+    drought). Cada trial del sweep evalua el ensemble (no una seed) -> seleccion de HP robusta para
+    el modelo FINAL de 2020. Train 2017+2018 -> val 2019 para la SELECCION. Portada = drought. 2020
+    sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true            # un trait, varios ambientes como cabezas
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought        # portada: pearson_r_GY del sweep = pearson de la cabeza drought DEL ENSEMBLE
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble_multitask
+  params:
+    n_models: 5               # seeds por trial (5 = buen balance robustez/costo; 3 si el sweep es caro)
+    seed_step: 1000           # seeds = inner.random_state + i*seed_step
+    inner:                    # HP de la RED (mlp_multitask); ESTO es lo que barre el sweep
+      hidden_dims: [128]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 100
+      loss: pearson
+      loss_weights:
+        GY_optimal: 1.0
+        GY_drought: 1.0
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575       # seed BASE del ensemble (las demas: +1000, +2000, ...)
+      device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mlp, multitask, multienv, ensemble, nn, pytorch, sweep, select, train2017-2018, val2019, GY, drought, pearson-loss, for-final-2020]

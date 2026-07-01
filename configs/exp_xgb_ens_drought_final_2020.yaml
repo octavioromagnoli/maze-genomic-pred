@@ -1,0 +1,72 @@
+# =========================================================================================
+# !!!  TEST FINAL EN 2020  —  CORRER UNA SOLA VEZ, AL CIERRE DEL PROYECTO  !!!
+# =========================================================================================
+# Ensemble de XGBoost (drought) reentrenado en TODO el dev (2017+2018+2019) -> predice 2020.
+# Analogo al de la red (exp_mlp_multienv_ens_GY_final_2020.yaml). NO correr hasta congelar los HP.
+# Flujo:
+#   1) Elegir los HP del XGB SIN tocar 2020, con el sweep ROBUSTO (ensemble):
+#        wandb sweep configs/sweep_xgb_ens_drought.yaml   (selecciona por el pearson_r_mean DEL
+#        ENSEMBLE en val 2018).
+#   2) Pegar los HP ganadores en model.params.inner.* de ESTE archivo (placeholders abajo).
+#   3) python scripts/train.py --config configs/exp_xgb_ens_drought_final_2020.yaml
+#      -> reentrena el ensemble en 2017+2018+2019 y reporta el pearson en 2020 vs GBLUP-drought.
+# SIN MAF (marcadores crudos): el filtro MAF no es robusto entre anios (ver config de seleccion).
+# Para el MEJOR drought, combinar con la red (blend), o reportar el de mayor pearson en val 2019.
+
+experiment:
+  name: xgb_ens_drought_final_2020
+  description: >
+    TEST FINAL: ensemble de XGBoost para GY en sequia, reentrenado en TODO el dev
+    (2017+2018+2019) y evaluado en 2020 (holdout sellado). HP del XGB fijados por el sweep robusto
+    (ensemble) sin tocar 2020. Marcadores crudos (sin MAF).
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2020             # TEST FINAL (sellado hasta el cierre)
+  train_years: [2017, 2018, 2019]   # TODO el dev
+  holdout_test_year: null
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble
+  params:
+    inner_name: xgboost
+    n_models: 20              # ensemble grande para el modelo final
+    seed_step: 1000
+    standardize: false        # XGB calibrado -> promedio crudo
+    inner:                    # <<< HP ganadores del sweep XGB >>>
+      n_estimators: 366
+      max_depth: 6
+      learning_rate: 0.027324637541352947
+      subsample: 0.5182764716104041
+      colsample_bytree: 0.4244330441880756
+      reg_lambda: 0.004644153533366419
+      reg_alpha: 0.1
+      min_child_weight: 1
+      gamma: 1
+      n_jobs: 1
+      random_state: 575
+
+bootstrap:
+  enabled: true
+  n_boot: 2000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: xgb-ens-drought-final-2020
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [xgboost, ensemble, FINAL, test2020, GY, drought]

@@ -1,0 +1,78 @@
+# ENSEMBLE de seeds de XGBoost para GY en SEQUIA (drought) — CONFIG BASE del sweep ROBUSTO.
+#
+# POR QUE: el Pearson de UNA seed de XGB (su aleatoriedad viene de subsample/colsample) en val
+# 2018 es ruidoso -> un sweep que selecciona por ese numero OVERFITTEA 2018 (winner's curse). Aca
+# cada trial entrena un ENSEMBLE de `n_models` XGB con seeds distintas y promedia: el
+# pearson_r_mean que optimiza el sweep es el DEL ENSEMBLE (estable), y el modelo final ES ese
+# ensemble. Mismo criterio que el ensemble_multitask de la red.
+#
+# Motivacion: XGBoost (arboles) SUPERA a GBLUP en drought 2019 por si solo y esta DECORRELADO de
+# la red multienv -> el blend(red, XGB) es el mejor drought (ver notebook A5). Este sweep busca el
+# mejor XGB (robusto) para mejorar ese blend. XGB usa promedio CRUDO (calibrado; standardize:false).
+#
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado aca), sin tocar 2019. Reporte (2017+2018 ->
+# 2019) y test final (2020) son pasos posteriores. Lo barre configs/sweep_xgb_ens_drought.yaml
+# (HP del XGB en model.params.inner.*). NO tocar cv.*/data.* (reglas 2 y 3).
+
+experiment:
+  name: xgb_ens_drought_2017_to_2018
+  description: >
+    Ensemble de seeds de XGBoost (n_models) para GY en sequia, train 2017 -> val 2018. Cada trial
+    del sweep evalua el ENSEMBLE (no una seed) -> seleccion robusta de HP (sin winner's curse).
+    Sirve para mejorar el blend(red multienv + XGB) de drought. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018
+  train_years: [2017]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+# SIN preprocesamiento: marcadores CRUDOS (como GBLUP y la red), por justicia en la comparacion.
+# OJO (testeado): el filtro `maf_threshold: 0.05` saca poquisimos SNPs (21-136 de 4612) y su efecto
+# NO es robusto -> AYUDA al XGB en 2019 (+0.026) pero lo PERJUDICA en 2018 (el set de seleccion,
+# -0.013) y SIEMPRE empeora a GBLUP (-0.009). Como el sweep selecciona en 2018, usar MAF lo
+# handicapea; ademas inflaba el resultado (0.349 vs 0.316 raw). XGB raw ya supera a GBLUP en 2019
+# (+0.075*, robusto). Por eso NO se usa MAF aca.
+
+model:
+  name: ensemble
+  params:
+    inner_name: xgboost
+    n_models: 5                # XGB por trial (5 = balance robustez/costo)
+    seed_step: 1000            # seeds = inner.random_state + i*seed_step
+    standardize: false         # XGB esta calibrado -> promedio crudo (RMSE/R2 informativos)
+    inner:                     # HP del XGB; ESTO es lo que barre el sweep (inner.*)
+      n_estimators: 500
+      max_depth: 4
+      learning_rate: 0.05
+      subsample: 0.8
+      colsample_bytree: 0.5
+      reg_lambda: 1.0
+      reg_alpha: 0.0
+      min_child_weight: 1
+      gamma: 0.0
+      n_jobs: 1               # evita el segfault nativo con n_jobs=-1 (ver config XGB base)
+      random_state: 575       # seed BASE del ensemble (las demas: +1000, +2000, ...)
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [xgboost, ensemble, sweep, select, train2017, val2018, GY, drought]
