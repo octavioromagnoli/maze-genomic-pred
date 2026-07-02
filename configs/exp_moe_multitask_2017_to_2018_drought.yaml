@@ -1,0 +1,82 @@
+# MIXTURE OF EXPERTS MULTITASK (GY+PH+AD, drought) — CONFIG BASE del sweep (variante sequia).
+#
+# Identico a exp_moe_multitask_2017_to_2018.yaml pero en ambiente de SEQUIA. Gating PCA+GMM
+# (train-only) + un EnsembleMultitaskRegressor por cluster (experts sobre SNPs completos);
+# ruteo hard top-1 por responsabilidad del GMM. Salvaguardas: min_cluster_size + global fallback.
+#
+# BASELINE HONESTO a batir: la red multitask GLOBAL (mismo expert.inner, sin gating).
+# SELECCION HONESTA: train 2017 -> val 2018, sin tocar 2019. 2019 reporte, 2020 sellado.
+
+experiment:
+  name: moe_multitask_2017_to_2018_drought
+  description: >
+    Mixture of experts multitask para GY+PH+AD en ambiente de SEQUIA: PCA + GMM clusteriza el
+    espacio latente (train-only) y un ensemble multitask por cluster predice sobre los SNPs
+    completos; ruteo hard top-1. train 2017 -> val 2018 para seleccion; 2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018
+  train_years: [2017]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_multitask
+  params:
+    gating:
+      pca_n_components: 50
+      standardize: true
+      whiten: true
+      k: 3
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 150
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.5
+        input_dropout: 0.3
+        activation: relu
+        batchnorm: false
+        lr: 0.0005
+        weight_decay: 0.001
+        batch_size: 64
+        max_epochs: 100
+        loss: pearson
+        loss_weights:
+          GY: 1.0
+          PH: 0.5
+          AD: 0.5
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, multitask, nn, pytorch, pca, gmm, sweep, select, train2017, val2018, GY, PH, AD, drought, pearson-loss]

@@ -1,0 +1,92 @@
+# MIXTURE OF EXPERTS MULTITASK (GY+PH+AD, optimal) — CONFIG BASE del sweep.
+#
+# Gating PCA+GMM (train-only) + un EnsembleMultitaskRegressor por cluster (experts sobre los
+# SNPs COMPLETOS; PCA/GMM solo rutean). En prediccion se calcula la responsabilidad de la
+# muestra bajo el GMM y se rutea (hard top-1) al expert del cluster de mayor responsabilidad.
+# Salvaguardas p>>n: min_cluster_size + global fallback expert (sobre todo el train).
+#
+# BASELINE HONESTO a batir: la red multitask GLOBAL (mismo expert.inner, sin gating) — no solo
+# GBLUP. El MoE justifica su costo solo si le gana a esa red global.
+#
+# SELECCION HONESTA de HP: train 2017 -> val 2018 (clavado aca), sin tocar 2019 (regla 3).
+# El reporte final (reentrenar 2017+2018 -> 2019 vs GBLUP/univariado/MT global por trait) se
+# hace en el notebook con los HP ganadores; 2020 queda sellado. Lo barre
+# configs/sweep_moe_multitask.yaml (HP en model.params.*). NO tocar cv.* ni data.* (reglas 2 y 3).
+
+experiment:
+  name: moe_multitask_2017_to_2018
+  description: >
+    Mixture of experts multitask para GY+PH+AD en ambiente optimo: PCA + GMM clusteriza el
+    espacio latente (train-only) y un ensemble multitask por cluster predice sobre los SNPs
+    completos; ruteo hard top-1 por responsabilidad del GMM. Entrenado con 2017 y validado en
+    2018 para la seleccion de HP (inner honesto, sin tocar 2019). 2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]     # multitask: lista de traits (orden = columnas de Y)
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# El gating (PCA+GMM) y cada expert hacen su preprocesamiento train-only DENTRO de fit (regla 1).
+# No se usa el bloque `preprocess:`. save/load overridean torch (experts) + joblib (PCA/GMM).
+
+model:
+  name: moe_multitask
+  params:
+    gating:                     # PCA + GMM (train-only) para rutear
+      pca_n_components: 50       # dims retenidas por PCA (HP del sweep)
+      standardize: true          # z-score por-SNP antes del PCA
+      whiten: true               # componentes a var unitaria (mejor condicionado para GMM 'full')
+      k: 3                       # nº de clusters GMM (HP del sweep)
+      covariance_type: full      # full | diag | tied | spherical
+      reg_covar: 1.0e-6          # estabilidad numerica del GMM
+      n_init: 1                  # reinicios del EM
+      min_cluster_size: 150      # cluster con menos filas => sin expert propio (usa fallback)
+      global_fallback: true      # expert sobre TODO el train, para clusters chicos/vacios
+      random_state: 575
+    expert:                     # EnsembleMultitaskRegressor por cluster (arquitectura compartida)
+      n_models: 5                # seeds del ensemble por cluster
+      seed_step: 1000
+      inner:                     # params del MLPMultitaskRegressor (el sweep los pisa)
+        hidden_dims: [128]
+        dropout: 0.5
+        input_dropout: 0.3
+        activation: relu
+        batchnorm: false
+        lr: 0.0005
+        weight_decay: 0.001
+        batch_size: 64
+        max_epochs: 100          # HP del sweep (no hay early stopping con 1 ano de train)
+        loss: pearson            # "pearson" | "pearson_mse"
+        loss_weights:            # L = sum_i w_i * (1 - r_i) por trait; mas peso a GY (portada)
+          GY: 1.0
+          PH: 0.5
+          AD: 0.5
+        patience: null           # sin early stopping: con un solo ano no hay inner-split
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575        # seed base del ensemble
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false             # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, multitask, nn, pytorch, pca, gmm, sweep, select, train2017, val2018, GY, PH, AD, optimal, pearson-loss]

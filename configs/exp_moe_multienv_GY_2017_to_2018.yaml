@@ -1,0 +1,93 @@
+# MIXTURE OF EXPERTS MULTITASK MULTI-AMBIENTE (GY optimal+drought) — CONFIG BASE del sweep.
+#
+# Gating PCA+GMM (train-only) + un EnsembleMultitaskRegressor MULTI-AMBIENTE por cluster (tronco
+# compartido + una cabeza por ambiente: GY_optimal, GY_drought). Los experts entrenan sobre los
+# SNPs COMPLETOS; PCA/GMM solo rutean (hard top-1 por responsabilidad del GMM). Salvaguardas
+# p>>n: min_cluster_size + global fallback expert (sobre todo el train).
+#
+# Se apoya en el resultado del multienv global (supera a GBLUP en GY-sequia de forma robusta;
+# ver bitacora). Portada = drought (cover_env: drought => pearson_r_GY del sweep = cabeza drought).
+# BASELINE HONESTO a batir: el multienv GLOBAL (mismo expert.inner, sin gating), no solo GBLUP.
+#
+# SELECCION HONESTA de HP: train 2017 -> val 2018 (clavado aca), sin tocar 2019 (regla 3).
+# El reporte final (reentrenar 2017+2018 -> 2019 vs GBLUP-drought) se hace en el notebook con
+# los HP ganadores; 2020 queda sellado. Lo barre configs/sweep_moe_multienv.yaml.
+
+experiment:
+  name: moe_multienv_GY_2017_to_2018
+  description: >
+    Mixture of experts multitask MULTI-AMBIENTE para GY: PCA + GMM clusteriza el espacio latente
+    (train-only) y un ensemble multitask por cluster (tronco compartido + una cabeza por ambiente)
+    predice sobre los SNPs completos; ruteo hard top-1 por responsabilidad del GMM. Entrenado con
+    2017 y validado en 2018 para la seleccion de HP. Portada = drought. 2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true            # un trait, varios ambientes como cabezas (NO usar data.targets)
+  target: GY                # trait unico
+  envs: [optimal, drought]  # una cabeza por ambiente (orden = columnas de Y)
+  cover_env: drought        # ambiente de PORTADA (pearson_r_GY del sweep = pearson de esta cabeza)
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# El gating (PCA+GMM) y cada expert hacen su preprocesamiento train-only DENTRO de fit (regla 1).
+# No se usa el bloque `preprocess:`. save/load overridean torch (experts) + joblib (PCA/GMM).
+
+model:
+  name: moe_multitask
+  params:
+    gating:                     # PCA + GMM (train-only) para rutear
+      pca_n_components: 50
+      standardize: true
+      whiten: true
+      k: 3
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 150
+      global_fallback: true
+      random_state: 575
+    expert:                     # EnsembleMultitaskRegressor MULTI-AMBIENTE por cluster
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]       # tronco NO-LINEAL (la variante lineal no supera a GBLUP)
+        dropout: 0.5
+        input_dropout: 0.3
+        activation: relu
+        batchnorm: false
+        lr: 0.0005
+        weight_decay: 0.001
+        batch_size: 64
+        max_epochs: 100
+        loss: pearson
+        loss_weights:            # claves = trait_ambiente (pesos iguales por cabeza)
+          GY_optimal: 1.0
+          GY_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, multitask, multienv, nn, pytorch, pca, gmm, sweep, select, train2017, val2018, GY, optimal, drought, pearson-loss]

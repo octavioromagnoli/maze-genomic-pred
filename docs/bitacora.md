@@ -767,3 +767,79 @@ del régimen del sweep**: con 1 año de train (2017) no hay inner-val, así que 
 solo existe `train_loss` (la curva de val aparece solo con early stopping, ≥2 años). Los
 200 trials ya corridos no tienen curva (no se puede recuperar); aplica a corridas futuras.
 En el notebook las learning curves de los 3 MLP finales se grafican desde `history_`.
+
+## Fase 7 — Mixture of Experts multitask (gating PCA+GMM)
+
+**Objetivo:** especializar la red por subpoblación genómica en vez de una única red global.
+Se reduce la dimensionalidad de los SNPs con **PCA**, se clusteriza el espacio latente con un
+**GMM** y se entrena **un ensemble multitask por cluster** (los *experts*). En predicción se
+calcula la responsabilidad de la muestra bajo el GMM y se rutea **hard top-1** al expert del
+cluster de mayor responsabilidad. Hipótesis: hay estructura de subpoblación que una red global
+promedia y un mixture of experts puede explotar. 2020 sigue sellado.
+
+### Qué quedó armado
+- **Modelo** [`src/models/moe_multitask.py`](../src/models/moe_multitask.py)
+  (`MixtureOfExpertsMultitaskRegressor`), registrado como `moe_multitask` en
+  [`registry.py`](../src/models/registry.py) y ruteado al flujo multitask desde
+  [`train.py`](../scripts/train.py). Espeja `ensemble_multitask`: interfaz
+  `fit(X, Y, Y_mask)` / `predict(X) -> (n, T)`, override torch de `save`/`load` (cada expert
+  en su subdir + manifiesto joblib con PCA/GMM).
+- **Gating train-only (regla 1):** reusa `SNPPreprocessor(standardize)` → `PCAReducer` de
+  [`preprocess.py`](../src/data/preprocess.py) + `GaussianMixture`. PCA y GMM se ajustan SOLO
+  con el train del fold; en inferencia se proyecta val/test sobre los mismos componentes/GMM.
+- **Experts sobre los SNPs COMPLETOS** (PCA/GMM solo rutean): cada cluster entrena un
+  `EnsembleMultitaskRegressor` (varias seeds, tronco compartido + una cabeza por trait/ambiente).
+- **Configs**: trait-multitask (GY+PH+AD, óptimo y sequía) y multi-ambiente
+  ([`exp_moe_multienv_GY_2017_to_2018.yaml`](../configs/exp_moe_multienv_GY_2017_to_2018.yaml)),
+  con sus sweeps. Arm cableado en la Fase B del notebook de comparación.
+
+### Diseño: ruteo hard + salvaguardas p≫n
+El riesgo central es que partir n≈2319 en K clusters deja cada expert con ~500–800 muestras en
+régimen p≫n. Dos salvaguardas: **`min_cluster_size`** (un cluster con menos filas NO entrena
+expert propio) y un **global fallback expert** entrenado sobre TODO el train, que atiende los
+clusters chicos o vacíos en inferencia (garantiza predicción siempre). Con un solo año de train
+(2017, 901 líneas) `k=3`/`cov=full` sobre PCA colapsaba un componente a ~8 puntos; con 2017+2018
+(~2319 líneas) los clusters quedan bien poblados. El baseline honesto a batir NO es solo GBLUP
+sino la **red multitask global ensamblada** (mismo `inner`, sin gating).
+
+### Selección de HP (sweep `87qyjrcr`, val 2018, cabeza drought)
+Sweep bayesiano de 118 trials válidos sobre el multienv (train 2017 → val 2018, portada = GY
+drought), barriendo gating (`k`, `pca_n_components`, `covariance_type`, `min_cluster_size`) y la
+arquitectura/regularización de los experts. Mejor trial `u1kgstvr`: **`pearson_r_GY` = 0.269**
+(val 2018), contra ~0.217 de GBLUP-drought, ~0.219 del MoE a HP base y ~0.225 del multienv global
+base — todo sobre el set de selección. El **top-5 comparte HP** (`k=4`, `pca=100`, `cov=full`,
+`min_cluster_size=250`, hidden `[128]` leaky_relu sin BN, `n_models=5`): la cima es una **región
+consistente**, no un pico aislado, lo que mitiga el winner's curse (distribución: max 0.269, p90
+0.242, mediana 0.228).
+
+### Veredicto 2019 (multienv GY sequía) — la ablación del gating
+Reentrenando el HP ganador de `u1kgstvr` sobre 2017+2018 y evaluando en **val 2019** (ruta de
+reporte, computada offline; IC95% pareado cluster por línea, `n=721`):
+
+| modelo | Pearson 2019 | matching20 |
+|---|---|---|
+| **MoE (gating + ensemble)** | **0.369** [0.301, 0.431] | **0.472** [0.396, 0.528] |
+| Ensemble global (sin gating, mismo `inner`/5 seeds) | 0.307 [0.235, 0.376] | 0.382 |
+| GBLUP-drought | 0.241 [0.168, 0.311] | 0.354 |
+
+Deltas pareados (`* ` = IC95% no cruza 0):
+- **MoE vs GBLUP: +0.127 [+0.078, +0.175] \*** — el margen más grande del TP.
+- Ensemble global vs GBLUP: +0.066 [+0.028, +0.103] \* — replica el resultado robusto del multienv.
+- **MoE vs ensemble global: +0.061 [+0.015, +0.106] \*** — significativo.
+
+La clave es el tercer delta: el MoE le gana al **ensemble global con el mismo HP y las mismas 5
+seeds** de forma significativa ⇒ el **gating aporta señal real por encima de solo ensamblar** (era
+la pregunta abierta de la ablación). El número **sube** de 2018 a 2019 (0.269 → 0.369): no es
+leakage, la selección entrena solo con 2017 (901 líneas) y el reporte con 2017+2018 (~2319), más
+datos. Gating en el reporte: `k=4` → clusters 192/465/1265/398; el de 192 cae bajo
+`min_cluster_size=250` ⇒ 3 experts + fallback.
+
+### Notas
+- **Solo aplica a sequía.** En óptimo (a HP base) el MoE empata a la red global y ambos pierden
+  contra GBLUP: GBLUP es imbatible en el ambiente fácil. La ventaja del MoE aparece donde hay
+  estructura de subpoblación explotable (el ambiente difícil), consistente con el multienv global.
+- **matching20 = 0.472** (vs 0.354 de GBLUP) es lo más relevante para mejoramiento: recupera el
+  47% del top-20% de líneas por rinde.
+- **2020 sigue sellado**: esto es dev. El árbitro final (reentrenar 2017–2019 → 2020) queda para el
+  cierre. Pendiente opcional antes de escribir el informe: prueba de robustez a la seed
+  (subconjuntos disjuntos, como en el multienv global de la Fase A5).
