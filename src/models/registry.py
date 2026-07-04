@@ -19,6 +19,7 @@ from src.models.gblup_residual import GBLUPResidualRegressor
 from src.models.mlp import MLPRegressor
 from src.models.mlp_multitask import MLPMultitaskRegressor
 from src.models.moe_multitask import MixtureOfExpertsMultitaskRegressor
+from src.models.moe_soft_multitask import SoftMoEMultitaskRegressor
 from src.models.xgb import XGBoostRegressor
 
 REGISTRY: dict[str, type[BaseModel]] = {
@@ -30,6 +31,7 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "mlp_multitask": MLPMultitaskRegressor,
     "ensemble_multitask": EnsembleMultitaskRegressor,
     "moe_multitask": MixtureOfExpertsMultitaskRegressor,
+    "moe_soft_multitask": SoftMoEMultitaskRegressor,
     "cbeta_vae": CBetaVAERegressor,
 }
 

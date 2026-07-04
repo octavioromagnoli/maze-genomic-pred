@@ -1,0 +1,90 @@
+# SOFT MIXTURE OF EXPERTS MULTITASK (GY+PH+AD, optimal) — backbone compartido + gate blando.
+#
+# Contraste con moe_multitask (gating PCA+GMM, ruteo HARD top-1 que PARTE el training y deja cada
+# expert con hambre de datos): aca el backbone ve TODOS los datos (preserva el beneficio multitarea
+# y evita el hambre de datos) y sobre el embedding compartido h, K cabezas de experto multitarea se
+# MEZCLAN con un gate blando (softmax con temperatura tau). Prediccion = sum_k g_k(h) * expert_k(h).
+#
+# ANTI-COLAPSO (leccion del MoE-GMM): temperatura tau + load-balancing loss estilo Switch
+# (K*sum_k f_k*P_k, coef lb_coef). Se loguea POR EPOCA curve/gate_entropy y curve/gate_load_* para
+# verificar que la mezcla es real y no degenera a hard.
+#
+# BASELINE HONESTO a batir: la red multitask GLOBAL (mlp_multitask / ensemble_multitask, sin gate)
+# — no solo GBLUP. El soft MoE justifica su costo solo si le gana a esa red global.
+#
+# SELECCION HONESTA de HP: train 2017 -> val 2018 (clavado aca), sin tocar 2019 (regla 3). El
+# reporte final (reentrenar 2017+2018 -> 2019 vs GBLUP/univariado/MT global por trait) se hace en el
+# notebook con los HP ganadores; 2020 queda sellado. Lo barre configs/sweep_moe_soft_multitask.yaml
+# (HP en model.params.*). NO tocar cv.* ni data.* (reglas 2 y 3).
+
+experiment:
+  name: moe_soft_multitask_2017_to_2018
+  description: >
+    Soft mixture of experts multitask para GY+PH+AD en ambiente optimo: un backbone compartido
+    (tronco de la MTL) produce un embedding h por linea entrenado sobre TODAS las lineas; K cabezas
+    de experto multitarea sobre h se mezclan con un gate blando (softmax/tau). Load-balancing estilo
+    Switch + temperatura para que la mezcla no degenere a hard top-1. Entrenado con 2017 y validado
+    en 2018 para la seleccion de HP (inner honesto, sin tocar 2019). 2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]     # multitask: lista de traits (orden = columnas de Y)
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# El backbone, los expertos y el gate hacen su preprocesamiento train-only DENTRO de fit (regla 1:
+# z-score de features y del target solo con el train del fold). No se usa el bloque `preprocess:`.
+# save/load overridean torch (state_dict + arquitectura, heredado de mlp_multitask).
+
+model:
+  name: moe_soft_multitask
+  params:
+    # --- tronco compartido (mismo bloque que la MTL) ---
+    hidden_dims: [128]         # el embedding compartido h es hidden_dims[-1]
+    dropout: 0.5
+    input_dropout: 0.3
+    activation: relu
+    batchnorm: false
+    lr: 0.0005
+    weight_decay: 0.001
+    batch_size: 64
+    max_epochs: 100            # HP del sweep (no hay early stopping con 1 ano de train)
+    loss: pearson              # "pearson" | "pearson_mse"
+    loss_weights:              # L = sum_i w_i * (1 - r_i) por trait; mas peso a GY (portada)
+      GY: 1.0
+      PH: 0.5
+      AD: 0.5
+    patience: null             # sin early stopping: con un solo ano no hay inner-split
+    standardize_inputs: true
+    standardize_target: true
+    random_state: 575
+    device: auto
+    # --- soft mixture of experts ---
+    n_experts: 4               # K expertos que el gate mezcla (probar 2, 4, 8 en el sweep)
+    gate_tau: 1.0              # temperatura del softmax del gate (>1 = mezcla mas blanda)
+    lb_coef: 0.01              # coef de la load-balancing loss (Switch: K*sum_k f_k*P_k)
+    gate_hidden_dim: null      # null => gate lineal Linear(h, K); int => 1 capa oculta en el gate
+    expert_hidden_dim: null    # null => cada experto es Linear(h, n_targets); int => 1 capa oculta
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false            # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, soft, multitask, nn, pytorch, gate, load-balance, sweep, select, train2017, val2018, GY, PH, AD, optimal, pearson-loss]

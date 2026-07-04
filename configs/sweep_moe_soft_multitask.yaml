@@ -1,0 +1,95 @@
+# Sweep BAYESIANO del SOFT MoE MULTITASK (GY+PH+AD, optimal), optimizando PEARSON DE GY
+# DIRECTAMENTE (pearson_r_GY), NO el promedio de traits. Barre el bloque soft-MoE (K expertos,
+# temperatura del gate, coef de load-balancing) + la arquitectura/regularizacion/optimizacion del
+# backbone compartido + los pesos auxiliares de la loss (PH, AD; GY anclado en 1.0 en el base).
+#
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado en el config base, sin tocar 2019). El reporte
+# final (reentrenar 2017+2018 -> 2019 vs GBLUP / univariado / MT global) es un paso posterior en el
+# notebook con los HP ganadores; 2020 sellado. NO tocar cv.* ni data.* (reglas 2 y 3).
+#
+# COSTO: a diferencia del moe_multitask (hard), cada trial entrena UNA sola red (backbone + K
+# cabezas + gate), no (k+1)*n_models: es barato aunque K sea grande. set_nested soporta las claves
+# anidadas (model.params.loss_weights.PH).
+#
+# Uso:
+#   wandb login
+#   wandb sweep configs/sweep_moe_soft_multitask.yaml     # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en screen
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_moe_soft_multitask_pearsonGY_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 120
+
+metric:
+  name: pearson_r_GY
+  goal: maximize
+
+parameters:
+  # --- soft mixture of experts: lo especifico de este camino ---
+  model.params.n_experts:
+    values: [2, 4, 8]              # K expertos que el gate mezcla
+  model.params.gate_tau:
+    distribution: uniform         # temperatura del softmax del gate (>1 = mezcla mas blanda)
+    min: 0.5
+    max: 3.0
+  model.params.lb_coef:
+    distribution: log_uniform_values  # coef de la load-balancing loss (Switch)
+    min: 0.0001
+    max: 0.1
+  model.params.gate_hidden_dim:
+    values: [0, 32]               # 0 => gate lineal Linear(h, K); 32 => una capa oculta
+  # --- backbone compartido: arquitectura del tronco (mismo bloque que la MTL) ---
+  model.params.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [128, 64]
+      - [256, 128]
+  model.params.activation:
+    values: [relu, gelu, leaky_relu]
+  model.params.batchnorm:
+    values: [true, false]
+  # --- backbone: regularizacion (clave en p >> n) ---
+  model.params.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- backbone: optimizacion ---
+  model.params.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.batch_size:
+    values: [0, 32, 64]           # 0 = full-batch
+  model.params.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 300
+  # --- pesos auxiliares de la loss (GY anclado en 1.0 en el config base) ---
+  model.params.loss_weights.PH:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+  model.params.loss_weights.AD:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_moe_soft_multitask_2017_to_2018.yaml
