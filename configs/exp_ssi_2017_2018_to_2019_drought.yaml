@@ -1,0 +1,46 @@
+# SSI learned-kernel report: train 2017+2018 -> predict 2019 for GY drought.
+# One fixed temporal split, comparable with configs/exp_gblup_2017_2018_to_2019_drought.yaml.
+
+experiment:
+  name: ssi_glearned_2017_2018_to_2019_drought
+  description: >
+    SSI with G additive and MTL learned Gram kernel, trained/weighted on 2017+2018
+    and evaluated on 2019 for GY drought. 2020 is not used.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+
+ssi:
+  target: GY
+  env: drought
+  target_year: 2019
+  frac_predict: 1.0        # prediction set = all 2019; no 2019 phenotypes enter TS
+  n_partitions: 1
+  seed: 575
+  n_jobs: 1
+  compositions:
+    - {name: "2017-2018", years: [2017, 2018]}
+  pcts: [0]
+  kernels:
+    - {kind: G}
+    - {kind: gram_emb}
+  lambda:
+    n_lambda: 5
+    lambda_min_ratio: 0.05
+    cv_folds: 3
+  solver:
+    max_iter: 120
+    tol: 1.0e-5
+  embedding:
+    mtl_config: configs/exp_mlp_multitask_2017_to_2018_drought.yaml
+    overrides:
+      model.params.max_epochs: 100
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [ssi, kernel-learned, report, train2017-2018, val2019, GY, drought]
