@@ -249,7 +249,10 @@ def main() -> None:
     # Dispatch multitask: una red (o un ensemble de redes), varias cabezas (métricas por
     # trait). La ruta single-task de abajo queda intacta. El logging multitask vive en su
     # propio helper. `ensemble_multitask` envuelve `mlp_multitask` y usa el mismo pipeline.
-    if config.get("model", {}).get("name") in ("mlp_multitask", "ensemble_multitask", "moe_multitask"):
+    if config.get("model", {}).get("name") in (
+        "mlp_multitask", "mlp_multitask_reweight",
+        "ensemble_multitask", "moe_multitask",
+    ):
         results = run_multitask_evaluation(
             config, log_fn=make_wandb_logger(run), return_models=save_model
         )

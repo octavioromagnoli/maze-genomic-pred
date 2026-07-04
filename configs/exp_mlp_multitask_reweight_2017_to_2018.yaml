@@ -1,0 +1,69 @@
+# MLP MULTITASK con REPONDERACION DE MUESTRAS por META-LEARNING (Learning to Reweight Examples,
+# Ren et al. 2018). En vez de fijar la importancia por parentesco, APRENDE online un peso por muestra
+# que minimiza la perdida en un meta-set held-out del TRAIN (disjunto por linea). El val 2018 NUNCA
+# entra al fit (sin leakage, reglas 1-3). Entrena con MSE por-muestra reponderada; la Pearson sigue
+# siendo la portada (regla 5). Baseline a batir: la MTL global (mlp_multitask, sin reponderar).
+#
+# SELECCION HONESTA: train 2017 -> val 2018 (sin tocar 2019). 2020 sellado. Comparable 1:1 con
+# exp_mlp_multitask_2017_to_2018.yaml y exp_moe_soft_multitask_2017_to_2018.yaml.
+
+experiment:
+  name: mlp_multitask_reweight_2017_to_2018
+  description: >
+    MLP multitask (GY+PH+AD, optimo) con pesos por-muestra aprendidos por meta-learning (L2RW):
+    descubre automaticamente que individuos del train ayudan a generalizar a un meta-set held-out
+    (disjunto por linea), en vez de fijarlo por parentesco. Train 2017, val 2018 (seleccion honesta).
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018
+  train_years: [2017]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: mlp_multitask_reweight
+  params:
+    hidden_dims: [128]
+    dropout: 0.5
+    input_dropout: 0.3
+    activation: relu
+    batchnorm: false           # L2RW hace forwards funcionales: mantener BN off
+    lr: 0.0005
+    weight_decay: 0.001
+    batch_size: 64
+    max_epochs: 100
+    loss_weights:              # multiplica la MSE por-muestra de cada trait; mas peso a GY (portada)
+      GY: 1.0
+      PH: 0.5
+      AD: 0.5
+    patience: null
+    standardize_inputs: true
+    standardize_target: true
+    random_state: 575
+    device: auto
+    # --- meta-learning (Learning to Reweight Examples) ---
+    meta_frac: 0.2             # fraccion de LINEAS del train reservadas como meta-set held-out
+    meta_lr: null              # eta del paso virtual; null => usa lr
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mlp, multitask, reweight, meta-learning, l2rw, select, train2017, val2018, GY, PH, AD, optimal]
