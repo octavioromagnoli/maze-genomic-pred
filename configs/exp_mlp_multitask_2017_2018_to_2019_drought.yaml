@@ -1,0 +1,61 @@
+# MLP MULTITASK (PyTorch) — reporte: train 2017+2018 -> predecir 2019 en GY drought.
+# Usa los mismos hiperparametros del config de seleccion 2017 -> 2018, pero reentrena con
+# 2017+2018 y mide sobre 2019. 2020 queda fuera.
+
+experiment:
+  name: mlp_multitask_2017_2018_to_2019_drought
+  description: >
+    MLP multitask GY+PH+AD en ambiente de sequia, reentrenado con 2017+2018 y evaluado
+    sobre 2019 para comparar contra GBLUP normal. 2020 queda como holdout intocable.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: mlp_multitask
+  params:
+    hidden_dims: [128]
+    dropout: 0.5
+    input_dropout: 0.3
+    activation: relu
+    batchnorm: false
+    lr: 0.0005
+    weight_decay: 0.001
+    batch_size: 64
+    max_epochs: 100
+    loss: pearson
+    loss_weights:
+      GY: 1.0
+      PH: 0.5
+      AD: 0.5
+    patience: null
+    standardize_inputs: true
+    standardize_target: true
+    random_state: 575
+    device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [mlp, multitask, nn, pytorch, report, train2017-2018, val2019, GY, PH, AD, drought]

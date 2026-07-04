@@ -1,0 +1,60 @@
+# SSI (Sparse Selection Index, Lopez-Cruz et al. 2021, Eq. 3) con KERNEL APRENDIDO de la MTL.
+#
+# Protocolo del paper sobre GY drought: 100 particiones 85/15 del ciclo 2020 (prediction set held out),
+# composiciones de training de la Tabla 1 (single cycles + acumulados, con 0/5/10/15% de 2020).
+# Metrica: accuracy = correlacion(observado, predicho) media +/- SD sobre las 100 particiones.
+#
+# La red MTL NO predice: solo define la SIMILITUD (K_learned) sobre la que el SSI selecciona/pondera.
+# La prediccion es suma ponderada de fenotipos del TRAINING. Frontera de leakage en run_ssi.py /
+# ssi_embeddings.py (kernels solo de marcadores/embeddings; embedding entrenado en dev; 2020 held out).
+#
+# Baselines apples-to-apples con el MISMO solver/protocolo: G aditiva (GSSI / lasso-GBLUP) y Gaussiano
+# sobre SNPs crudos (KSSI). El aporte: gram_emb y gaussian_emb (kernel del embedding MTL).
+#
+# Uso:
+#   python scripts/train.py --config configs/exp_ssi_glearned.yaml
+
+experiment:
+  name: ssi_glearned_GY_drought
+  description: >
+    SSI con kernel aprendido de la MTL sobre GY drought (protocolo Lopez-Cruz 2021: 100 particiones
+    85/15 de 2020, composiciones Tabla 1, accuracy media +/- SD). Baselines G aditiva y Gaussiano SNP
+    con el mismo solver Python. La red define la similitud; la prediccion pondera fenotipos del training.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+
+ssi:
+  target: GY
+  env: drought
+  target_year: 2020         # ciclo objetivo (prediction set held out)
+  frac_predict: 0.85        # 85% prediction set / 15% pool disponible (413/73 aprox)
+  n_partitions: 100         # particiones aleatorias del ciclo objetivo
+  seed: 575
+  n_jobs: 4                 # joblib sobre particiones (cada una es independiente)
+  compositions: null        # null = Tabla 1 completa (2017/2018/2019/2018-2019/2017-2019)
+  pcts: [0, 5, 10, 15]      # % del ciclo 2020 agregado al training, muestreado desde el pool disponible
+  kernels:                  # baselines + aporte, todos con el mismo solver
+    - {kind: G}                       # aditiva (GSSI / lasso-GBLUP del companiero)
+    - {kind: gaussian_snp}            # Gaussiano sobre SNPs crudos (KSSI); 3 bandwidths K1/K2/K3
+    - {kind: gram_emb}                # K_learned Gram (embedding MTL estandarizado)
+    - {kind: gaussian_emb}            # K_learned Gaussiano (embedding MTL); 3 bandwidths
+  lambda:
+    n_lambda: 50            # grilla de lambda (sparsity) para el CV
+    lambda_min_ratio: 0.01
+    cv_folds: 10            # 10-fold CV DENTRO del training para elegir lambda (un lambda por TS)
+  solver:
+    max_iter: 1000
+    tol: 1.0e-7
+  embedding:
+    mtl_config: configs/exp_mlp_multitask_2017_to_2018_drought.yaml   # MTL para el embedding (GY+PH+AD drought)
+    # overrides: {}         # opcional: pisa HP del mtl_config (p.ej. epochs)
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [ssi, kernel-learned, GY, drought, lopez-cruz, gssi, kssi]

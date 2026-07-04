@@ -23,6 +23,7 @@ import numpy as np
 from src.training.save_model import save_model_artifact
 from src.training.run import run_evaluation
 from src.training.run_multitask import run_multitask_evaluation
+from src.training.run_ssi import run_ssi_evaluation
 from src.utils.config import load_config, set_nested
 from src.utils.seed import set_seed
 
@@ -206,6 +207,29 @@ def log_multitask_results(run, results: dict, config: dict, seed: int, save_mode
         print(f"[train] modelo guardado en {art_dir} (+ wandb Artifact '{art_name}')")
 
 
+def log_ssi_results(run, results: dict) -> None:
+    """Logging del flujo SSI: tabla accuracy (kernel × composicion) a stdout + wandb."""
+    import wandb
+
+    print(
+        f"[train] SSI {results['target']}x{results['env']} target_year={results['target_year']} "
+        f"n_all={results['n_all']} n_2020={results['n_2020']} kernels={results['kernels']} "
+        f"particiones={results['n_partitions']}"
+    )
+    per = results["per_setting"]
+    print(f"  {'kernel':<20}{'composition':<18}{'acc_mean':>10}{'acc_sd':>9}{'n':>5}")
+    print("  " + "-" * 60)
+    for r in sorted(per, key=lambda x: (x["composition"], -(x["acc_mean"] if np.isfinite(x["acc_mean"]) else -9))):
+        print(f"  {r['kernel']:<20}{r['composition']:<18}{r['acc_mean']:>10.4f}{r['acc_sd']:>9.4f}{r['n_valid']:>5}")
+
+    cols = ["kernel", "composition", "acc_mean", "acc_sd", "n_valid", "lambda_mean"]
+    table = wandb.Table(columns=cols)
+    for r in per:
+        table.add_data(*[r.get(c) for c in cols])
+        run.summary[f"acc/{r['kernel']}/{r['composition']}"] = r["acc_mean"]
+    run.log({"ssi_results": table})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Entrenamiento + CV con logging a wandb.")
     parser.add_argument("--config", required=True, help="Ruta al YAML del experimento.")
@@ -245,6 +269,16 @@ def main() -> None:
     save_model = bool(art_cfg.get("save_model", False))
 
     print(f"[train] experimento={config.get('experiment', {}).get('name')} seed={seed} wandb_mode={mode}")
+
+    # Dispatch SSI: camino "kernel -> Sparse Selection Index" (Lopez-Cruz 2021). Se activa con un
+    # bloque `ssi:` en el config; no ajusta fit/predict sino que corre el protocolo del paper
+    # (100 particiones de 2020 x composiciones x kernels) y loguea accuracy por kernel×composicion.
+    if config.get("ssi") is not None:
+        results = run_ssi_evaluation(config, log_fn=make_wandb_logger(run))
+        log_ssi_results(run, results)
+        run.finish()
+        print("[train] corrida SSI finalizada. Si mode=offline, sincronizá con: wandb sync")
+        return
 
     # Dispatch multitask: una red (o un ensemble de redes), varias cabezas (métricas por
     # trait). La ruta single-task de abajo queda intacta. El logging multitask vive en su
