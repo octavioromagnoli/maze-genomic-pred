@@ -1,0 +1,35 @@
+# Sweep CONFIRMATORIO (grid chico) del modelo sparse en GY drought. train 2017+2018 -> val 2019.
+#
+# El modelo casi no tiene HP: alpha se auto-elige por inner-CV temporal DENTRO de fit. Las unicas
+# decisiones son l1_ratio (LASSO vs ElasticNet) y select_by (criterio de la inner-CV). Los
+# diagnosticos de dev ya muestran que l1_ratio=1.0 (LASSO puro) es el mas robusto (ElasticNet 0.5
+# es inestable across-year), y n_bags/subsample son perillas de robustez (mas bags = mas estable,
+# no mas performance). Este sweep es DUE DILIGENCE, no una busqueda amplia: grid exhaustivo sobre
+# 2 ejes. El ganador debe CONFIRMARSE en LOYO (no solo en val 2019) antes de creerle (regla de oro).
+#
+# Uso:
+#   wandb sweep configs/sweep_sparse_lasso_drought.yaml     # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_sparse_lasso_drought_2017_2018_to_2019
+program: scripts/train.py
+method: grid
+
+metric:
+  name: pearson_r_mean       # Pearson de la cabeza drought en val 2019
+  goal: maximize
+
+parameters:
+  model.params.l1_ratio:
+    values: [1.0, 0.9, 0.7, 0.5]   # 1.0 = LASSO; <1 = ElasticNet (L2 agrupa marcadores en LD)
+  model.params.select_by:
+    values: [pearson, sse]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_sparse_lasso_GY_drought_2017_2018_to_2019.yaml

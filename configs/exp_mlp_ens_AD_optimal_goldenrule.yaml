@@ -1,0 +1,79 @@
+# MLP ENSEMBLE (deep learning) — AD (dias a floracion) en ambiente OPTIMO. La UNICA no-linealidad
+# robusta del proyecto: una red le gana a GBLUP prediciendo un trait SECUNDARIO.
+#
+# QUE ES: ensemble de 5 seeds de un MLP chico (una capa oculta [128], dropout fuerte + early stopping
+# temporal por pearson). Predice AD_Optimal desde los marcadores crudos (estandarizados train-only).
+#
+# RESULTADO (esquema expanding, ambos folds scoring; ensemble de 5 seeds):
+#   val2019 (deploy-analogo): MLP-[128] 0.359 vs GBLUP-REML 0.298  -> +0.061, los 5 seeds ganan (min +0.010).
+#   val2018:                  MLP-[128] 0.462 ~ GBLUP 0.463         -> empate (NO es winner's curse: gana en
+#                             el ano deploy y empata out-of-sample, el patron opuesto al flip-por-fold).
+# ABLACION LINEAL (misma receta, hidden=[] vs [128] vs [256,128]): el +0.061 sobre GBLUP se descompone en
+#   +0.026 = ESTIMADOR (dropout/early-stop-pearson vs ridge; el MLP-lineal ya da 0.324 en 2019) y
+#   +0.035 = NO-LINEALIDAD (la capa oculta: [128] 0.359 vs lineal 0.324). Es SHALLOW: [256,128] overfittea
+#   (0.267 < lineal), coherente con p >> n. => hay senal no-lineal REAL en AD-optimal (floracion tiene genes
+#   de efecto grande tipo Vgt1/ZmCCT, candidatos a efectos umbral que GBLUP aditivo promedia).
+#
+# POR QUE IMPORTA (y sus limites): es el unico trait x ambiente donde la no-linealidad ayuda. NO ocurre en
+# PH (ningun ambiente) ni en AD-drought. Y NO rompe el techo de GY: AD es genomicamente ~ortogonal a GY
+# (gcorr~0), asi que sumar AD^ al indice de GY lo DANA en optimal (sig neg) y es neutro en drought (Fase 11).
+#
+# Sin leakage (regla 1): estandarizacion + early stopping se ajustan solo con el train del fold. 2020 SELLADO.
+
+experiment:
+  name: mlp_ens_AD_optimal_goldenrule
+  description: >
+    Ensemble (5 seeds) de MLP [128] para AD_Optimal. Le gana a GBLUP en val 2019 (+0.061, 5/5 seeds) y
+    empata en 2018. La no-linealidad (capa oculta) aporta ~+0.035 real (ablacion lineal). Unica
+    no-linealidad robusta del proyecto; es sobre un trait secundario y no transfiere a GY. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: AD
+  env: optimal
+
+cv:
+  scheme: expanding_temporal
+  val_years: [2018, 2019]   # ambos scoring: regla de oro (ganar/empatar en 2019 Y 2018)
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble
+  params:
+    inner_name: mlp
+    n_models: 5             # ensemble de seeds: el numero robusto (una seed sola es ruidosa)
+    seed_step: 1            # seeds 575..579
+    standardize: false      # MLP con loss MSE => predicciones calibradas => promedio crudo
+    inner:
+      hidden_dims: [128]    # una capa oculta: la no-linealidad shallow que gana; mas profundo overfittea
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 200
+      patience: 25          # early stopping temporal interno (2017 -> 2018 en el fold 2019)
+      val_metric: pearson   # portada (regla 5); con p >> n el MSE de inner-val degenera a la epoca 0
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mlp, ensemble, deep-learning, nonlinear, AD, optimal, val2018, val2019, secondary-trait]

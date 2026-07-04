@@ -1,0 +1,123 @@
+% Borrador de sección para el informe (LaTeX, prosa fluida).
+% Documenta la exploración "¿puede la no-linealidad superar los baselines aditivos?".
+% Todos los números son de las corridas de validación honesta (regla de oro + bootstrap
+% pareado cluster-por-línea). Reemplazar los \pearson por los links de wandb al integrar.
+
+\section{¿Aporta la no-linealidad sobre los baselines aditivos?}
+\label{sec:no-linealidad}
+
+Establecidos los baselines por ambiente —GBLUP para el ambiente óptimo y el LASSO
+baggeado para sequía—, la pregunta natural es si una red neuronal, u otro modelo capaz
+de capturar estructura no-aditiva, puede superarlos explotando interacciones entre
+marcadores. La hipótesis es atractiva: si existiera epistasis o dominancia relevante para
+el rendimiento, un modelo aditivo la dejaría sobre la mesa. Esta sección la pone a prueba
+de forma sistemática y concluye que, para estos datos, la no-linealidad no ofrece una
+mejora robusta: la arquitectura genética del rendimiento es aditiva en ambos ambientes y
+los baselines ya operan en el techo de predictibilidad.
+
+\subsection{Protocolo de validación}
+
+Toda comparación se juzga con dos folds temporales y un criterio deliberadamente estricto
+que llamamos la \emph{regla de oro}. El primer fold es el análogo de despliegue: se
+entrena con 2017+2018 y se valida en 2019, replicando la situación de predecir el año
+siguiente. El segundo es un fold de robustez tipo \emph{leave-one-year-out} que entrena
+con 2017+2019 y valida en 2018. Un método se considera superador solo si mejora al
+baseline en \emph{ambos} folds; el año 2020 permanece sellado. Las diferencias de
+correlación de Pearson se reportan con un bootstrap pareado que remuestrea clusters por
+línea, de modo que el intervalo de confianza refleja la incertidumbre real a nivel de
+genotipo y no de observación. Este diseño es intencionalmente severo: en régimen
+$p \gg n$ es fácil obtener ganancias espurias que solo aparecen en un fold —el clásico
+\emph{winner's curse} discutido en \citep{murphy2022}— y la regla de oro las descarta.
+
+\subsection{Métodos evaluados}
+
+La exploración cubrió las principales familias con las que, en teoría, se podría capturar
+señal no-aditiva u ortogonal. Entre las redes y kernels se probaron perceptrones
+multicapa sobre los marcadores crudos, redes residuales que parten de la predicción del
+ganador, kernels gaussianos (RKHS, la versión no-lineal de GBLUP), esquemas multi-kernel
+que combinan un kernel aditivo con uno gaussiano, máquinas de factorización para epistasis
+de pares, autoencoders de denoising con salida sigmoide y entropía cruzada binaria,
+aumentación de datos con un C-$\beta$-VAE, y redes multitarea y multi-ambiente. Entre los
+enfoques de combinación se evaluó el \emph{stacking} de las predicciones de GBLUP y LASSO
+—tanto in-sample como con predicciones \emph{out-of-fold}—, la mezcla de pesos fijos, la
+transferencia entre ambientes (usar la predicción genómica del rendimiento en óptimo como
+covariable para sequía), el uso de los caracteres secundarios altura de planta y días a
+floración como predictores, y árboles con \emph{boosting} en sus variantes directa y
+residual. Finalmente se barrió el \emph{elastic net} para verificar si una penalización
+mixta $L_1$+$L_2$ captura simultáneamente una componente densa y una \emph{sparse}.
+
+\subsection{Resultado: ningún método supera de forma robusta}
+
+Ninguna de las familias anteriores mejora a su baseline en los dos folds. El patrón es
+sistemático y esclarecedor. En el ambiente óptimo, cualquier modelo que introduzca
+\emph{sparsity} —LASSO, elastic net, árboles— derrumba la predicción en el fold de
+despliegue (por ejemplo, el elastic net cae de $0{,}31$ a valores de $0{,}13$--$0{,}17$ en
+2019), aunque supere a GBLUP en el fold de 2018. Esta inversión por fold no es explotable:
+2019 exige la densidad de GBLUP y 2018 premia la \emph{sparsity}, de modo que ninguna
+combinación fija ni ningún modelo mixto gana en ambos. La prueba más nítida proviene del
+esquema multi-kernel, cuya validación interna asigna peso nulo al kernel gaussiano y
+recupera exactamente GBLUP: no hay varianza no-aditiva que ponderar. En sequía, donde la
+señal es \emph{sparse}, el LASSO baggeado resulta ser el techo; el elastic net empata a lo
+largo de todo el rango de $l_1$ (las diferencias caen dentro del ruido del bootstrap), lo
+que indica que no existe una cola poligénica densa que una componente $L_2$ pueda
+aprovechar.
+
+El \emph{stacking} merece mención aparte por lo instructivo de su fracaso. Combinar las
+predicciones de GBLUP y LASSO con un meta-modelo entrenado sobre las predicciones
+in-sample colapsa, porque el combinador sobre-confía en el modelo que mejor sobreajusta el
+train y en validación pondera mal al que realmente generaliza. Corregido con predicciones
+\emph{out-of-fold}, el \emph{stacking} honesto (mínimos cuadrados no negativos o Ridge)
+pierde en todos los folds, y el escaneo de pesos fijos ubica su óptimo en el extremo —la
+base pura— confirmando que las predicciones densa y \emph{sparse} no aportan información
+complementaria una sobre la otra.
+
+\subsection{El único indicio positivo y su refutación}
+
+Un solo experimento produjo una mejora aparente y merece ser documentado porque ilustra la
+importancia del protocolo. La transferencia entre ambientes —predecir genómicamente el
+rendimiento en condiciones óptimas de cada línea, que por su mayor heredabilidad captura el
+potencial genético general, y usarlo como covariable para sequía— dio, con una red
+meta-aprendiz, una ganancia de $+0{,}017$ en Pearson sobre el LASSO en el fold de
+despliegue de 2019 (intervalo $[+0{,}010,\,+0{,}025]$, estable sobre dieciséis semillas).
+Fue el único caso en que un método mejoró un baseline sin dañar el otro fold. Sin embargo,
+la red se entrenaba sobre las predicciones \emph{in-sample} de los modelos base. Al repetir
+exactamente el mismo modelo pero entrenándolo sobre predicciones \emph{out-of-fold} —el
+único procedimiento honesto y efectivamente desplegable— la ganancia no solo desaparece
+sino que se vuelve negativa ($-0{,}039$ en 2019 y $-0{,}29$ en el fold de 2018). La mejora
+era, por lo tanto, optimismo in-sample de las predicciones base, no señal transferible. El
+episodio subraya por qué la selección honesta y la validación en más de un fold son
+indispensables.
+
+\subsection{Interpretación}
+
+La convergencia de todos estos resultados admite una lectura única, y existe una razón
+biológica que la explica de raíz. Los marcadores están codificados de forma binaria, lo que
+indica que las líneas son endocriadas y homocigotas: no hay heterocigotas en el panel. En
+consecuencia, la varianza de dominancia es estructuralmente nula —la dominancia requiere
+genotipos heterocigotas— y solo pueden existir componentes aditiva y epistática. Como la
+epistasis se descartó empíricamente por varias vías (máquinas de factorización, kernel
+gaussiano con peso nulo, árboles), queda esencialmente la componente aditiva. Que GBLUP y el
+LASSO —ambos modelos aditivos— constituyan el techo no es entonces un accidente de estos
+datos sino una consecuencia esperable de trabajar con líneas endocriadas. Un fenómeno
+secundario refuerza el punto: en el ambiente óptimo el rendimiento relativo de los métodos
+se invierte entre folds —los métodos locales o \emph{sparse} superan a GBLUP cuando se
+valida en 2018 pero se derrumban en 2019—, y esa inversión no es explotable porque la señal
+que indicaría en qué régimen se está (el grado de parentesco de las líneas a validar con el
+conjunto de entrenamiento) no se transfiere de forma fiable: un predictor adaptativo que
+pondera GBLUP contra vecinos según el parentesco, con pesos aprendidos honestamente fuera de
+muestra, aprende la regla equivocada y pierde en el fold de despliegue.
+
+El rendimiento de grano es, en este conjunto de datos y para ambos ambientes, un carácter de
+arquitectura aditiva.
+En el ambiente óptimo domina un régimen infinitesimal denso para el cual GBLUP, que es
+\emph{ridge regression} sobre la matriz de parentesco genómico, es cercano al óptimo de
+Bayes bajo un \emph{prior} gaussiano \citep{bishop2024}. En sequía la señal se concentra en
+pocos marcadores y el LASSO baggeado, estimador \emph{maximum a posteriori} de un
+\emph{prior} de Laplace, la modela mejor, con el \emph{bagging} reduciendo su varianza. En
+ninguno de los dos casos el residuo del ganador contiene estructura no-aditiva que una red
+pueda recuperar: cuando se la fuerza a modelarlo, agrega varianza y empeora la validación.
+El resultado no es un fracaso de implementación —se probaron del orden de quince familias
+de métodos con búsqueda de hiperparámetros y múltiples semillas— sino una propiedad de la
+señal. La mejora sustantiva del proyecto, en consecuencia, no proviene de la no-linealidad
+sino del cambio de \emph{prior} apropiado al ambiente: el LASSO supera a GBLUP en sequía en
+torno a un $63\%$ en Pearson, y ese salto, aditivo y \emph{sparse}, es el hallazgo central.

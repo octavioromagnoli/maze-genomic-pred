@@ -1,0 +1,74 @@
+# SPARSE (LASSO baggeado) — PORTADA DROUGHT. GY en SEQUIA: train 2017+2018 -> predecir 2019.
+# Analogo honesto de predecir 2020 desde todo el dev (validar en el ultimo anio disponible).
+#
+# POR QUE SPARSE Y NO GBLUP EN DROUGHT: GBLUP asume modelo infinitesimal (prior gaussiano de
+# igual varianza en TODOS los marcadores). Es el techo en OPTIMAL (trait altamente poligenico:
+# ~2750 marcadores significativos). Pero GY bajo SEQUIA tiene arquitectura mas RALA (menos
+# marcadores con senal fuerte; un nucleo de ~40-100 loci de efecto grande, estables en el
+# bagging) -> un estimador de SELECCION DE VARIABLES (LASSO = MAP de un prior Laplace, analogo
+# frecuentista de BayesB) predice mucho mejor. Verificado (delta pareado, bootstrap cluster por
+# linea): drought 2019 pearson 0.24 (GBLUP) -> ~0.39 (LASSO baggeado), Δ~+0.15, robusto (le gana
+# a GBLUP en el 100% de 20 submuestreos del train, minΔ +0.06). En OPTIMAL LASSO PIERDE (arquitectura
+# infinitesimal) -> ahi se queda GBLUP: el mejor modelo depende de la arquitectura del trait x ambiente.
+#
+# BAGGING = analogo del ensemble multi-seed de la red. Un LASSO single-fit es de ALTA varianza ante
+# submuestreo (la seleccion de marcadores en LD es inestable). Baggear (promediar coeficientes sobre
+# subsamples) reduce esa varianza y da el numero robusto. alpha se elige por inner-CV TEMPORAL
+# (2017->2018), sin tocar 2019/2020.
+
+experiment:
+  name: sparse_lasso_GY_drought_2017_2018_to_2019
+  description: >
+    LASSO baggeado sobre marcadores (seleccion de variables) para GY en SEQUIA. Train 2017+2018 ->
+    val 2019. Supera ampliamente a GBLUP en drought (arquitectura mas rala que optimal). alpha por
+    inner-CV temporal; bagging (25) para el numero robusto. Portada = pearson. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+# OJO: este modelo hace su estandarizacion train-only DENTRO de fit (regla 1; z-score de marcadores
+# por SNP, igual que GBLUP). NO se usa el bloque `preprocess:` (marcadores crudos, como GBLUP/red).
+
+model:
+  name: sparse_genomic
+  params:
+    l1_ratio: 1.0             # 1.0 = LASSO puro (mas robusto que ENet 0.5 en drought, verificado)
+    alpha: null               # null => se elige por inner-CV temporal (2017->2018); float => se fija
+    select_by: pearson        # criterio de la inner-CV (portada, regla 5)
+    internal_cv: temporal      # regla 3 (con 1 solo anio de train cae a K-fold)
+    bagging: true
+    n_bags: 60                # subir bags porque con random-subspace cada marker aparece en ~70% de los bags
+    subsample_frac: 0.8
+    subspace_frac: 0.7        # RANDOM-SUBSPACE (Random-LASSO): cada bag ve 70% de los marcadores.
+                              # Decorrelaciona la seleccion entre bags (los marcadores en LD dejan de
+                              # competir siempre juntos) => baja la varianza MAS que el bagging por muestras.
+                              # Mejora robusta en el fold deploy-analogo (2019): 0.394 -> 0.400, Δ+0.006
+                              # (P=0.99, nested frac>0=1.00). NEUTRO en 2018 (dentro del ruido). 1.0 = fallback.
+    random_state: 575         # seed del submuestreo del bagging (efectivamente determinista: sd~0.005)
+    max_iter: 5000
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false           # el sweep/dev no guarda; el final de 2020 se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [sparse, lasso, bagging, variable-selection, dev, train2017-2018, val2019, GY, drought]

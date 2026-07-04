@@ -1,0 +1,71 @@
+# =========================================================================================
+# !!!  TEST FINAL EN 2020  —  CORRER UNA SOLA VEZ, AL CIERRE DEL PROYECTO  !!!
+# =========================================================================================
+# Entrena el LASSO baggeado en TODO el dev (2017+2018+2019) y predice 2020 (holdout sellado),
+# para la PORTADA de sequia (GY drought). Se compara contra GBLUP-drought reentrenado igual
+# (2017+2018+2019 -> 2020; configs/exp_gblup_*_drought con el mismo split).
+#
+# NO correr hasta el cierre. El modelo casi no tiene HP que congelar (alpha se elige solo por
+# inner-CV temporal 2017+2018->2019, SIN tocar 2020; l1_ratio/n_bags estan justificados por los
+# diagnosticos de dev, no por 2020). Flujo:
+#   python scripts/train.py --config configs/exp_sparse_lasso_GY_drought_final_2020.yaml
+# -> reentrena en 2017+2018+2019, elige alpha por inner-CV (inner-train 2017+2018 -> inner-val 2019),
+#    bagea y predice 2020. El numero de 2020 es la adjudicacion final (una sola mirada).
+#
+# POR QUE USAR LOS 3 ANIOS: LASSO necesita train adecuado (con 1 solo anio de train pierde vs GBLUP;
+# con >=2 gana). Ademas 2019 es el anio genomicamente mas cercano a 2020 y 2017 fue el MEJOR
+# single-source de drought para 2019 -> NO descartar ningun anio de dev.
+
+experiment:
+  name: sparse_lasso_GY_drought_final_2020
+  description: >
+    TEST FINAL: LASSO baggeado (seleccion de variables) reentrenado en TODO el dev
+    (2017+2018+2019) y evaluado en 2020 (holdout sellado). Portada = GY en SEQUIA. alpha por
+    inner-CV temporal (2017+2018 -> 2019) sin tocar 2020.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2020                  # TEST FINAL (sellado hasta el cierre)
+  train_years: [2017, 2018, 2019] # TODO el dev (no descartar 2017: LASSO necesita datos)
+  holdout_test_year: null         # 2020 ya es el val/test; no hay holdout adicional
+  enforce_disjoint_lines: true
+
+model:
+  name: sparse_genomic
+  params:
+    l1_ratio: 1.0
+    alpha: null                   # inner-CV temporal 2017+2018 -> 2019 (no toca 2020)
+    select_by: pearson
+    internal_cv: temporal
+    bagging: true
+    n_bags: 60                    # ensemble grande para el modelo final (mas estable que en dev)
+    subsample_frac: 0.8
+    subspace_frac: 0.7            # random-subspace (Random-LASSO): mejora robusta chica en el fold
+                                  # deploy-analogo (2019 a nb matcheado: +0.006, P=0.99, nested frac>0=1.00),
+                                  # NEUTRA en 2018. 2020 es de tipo deploy. 1.0 = fallback conservador.
+    random_state: 575
+    max_iter: 5000
+
+bootstrap:
+  enabled: true
+  n_boot: 2000
+  alpha: 0.05
+
+artifacts:
+  save_model: true
+  name: sparse-lasso-gy-drought-final-2020
+  aliases: [latest]
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [sparse, lasso, bagging, variable-selection, FINAL, test2020, GY, drought]

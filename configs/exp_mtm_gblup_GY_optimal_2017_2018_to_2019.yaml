@@ -1,0 +1,66 @@
+# MULTI-TRAIT GBLUP (MTM) — GY+PH+AD en ambiente OPTIMO. Mejora ADITIVA y PRINCIPISTA sobre GBLUP.
+#
+# QUE ES: GBLUP multivariado. Un solo modelo mixto para los 3 traits con matriz de covarianza
+# genetica G0 (3x3) y residual R0 (3x3) estimadas por REML-EM. La correlacion genetica GY-PH
+# (~0.5-0.7 en optimal) deja que los datos de PH AFINEN la estimacion de los efectos geneticos de
+# GY (borrowing pleiotropico). Es el analogo ADITIVO del MLP multitask: NO apela a no-linealidad
+# (respeta el techo aditivo de GY en lineas endocriadas, donde la varianza de dominancia es cero),
+# sino a la covarianza genetica entre traits. Determinista: sin seeds ni winner's curse.
+#
+# POR QUE: en el harness de seleccion honesta, el MLP multitask gana en 2019 (fold de seleccion)
+# pero EMPATA en 2018 (out-of-sample) -> winner's curse. El MTM, en cambio, gana en AMBOS folds:
+# 2019 Δ+0.005 (IC incluye 0) y 2018 Δ+0.010 (IC95%[+0.007,+0.014], P(d>0)=1.0). Chico pero robusto
+# y principista. El single-trait de este mismo modelo (solo GY) reproduce GBLUP-REML EXACTO (0.3145
+# en 2019, 0.3234 en 2018) -> la ganancia es puramente el borrowing cross-trait de PH (AD no aporta,
+# corr(GY,AD)~0).
+#
+# COMPARACION JUSTA: val solo-genotipo (las cabezas PH/AD NO se observan en val); el borrowing ocurre
+# en la ESTIMACION (train), no usando fenotipos auxiliares del val. Apples-to-apples con GBLUP.
+#
+# SELECCION 2017+2018 -> val 2019 (analogo honesto para el modelo final de 2020: entrenar con todo lo
+# disponible antes del ultimo anio de DEV y validar en ese ultimo anio). 2019 sigue siendo DEV; 2020
+# SELLADO. El modelo hace su estandarizacion train-only DENTRO de fit (regla 1). Requiere datos
+# completos por fila (en optimal GY=PH=AD por observacion; se cumple).
+
+experiment:
+  name: mtm_gblup_GY_optimal_2017_2018_to_2019
+  description: >
+    Multi-trait GBLUP (GY+PH+AD, ambiente optimo). Borrowing pleiotropico via G0/R0 por REML-EM:
+    PH afina la estimacion genetica de GY. Portada = GY. Train 2017+2018 -> val 2019. Mejora
+    aditiva, determinista y robusta (gana en 2019 Y 2018) sobre GBLUP single-trait. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]     # multitask: GY portada; PH aporta el borrowing, AD ~ neutro
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: mtm_gblup
+  params:
+    n_iter: 300              # max iteraciones EM (converge mucho antes con tol)
+    tol: 1.0e-7              # tolerancia sobre G0/R0
+    ridge: 1.0e-3            # regularizacion diagonal del init (estabilidad numerica)
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mtm, gblup, multitask, additive, deterministic, train2017-2018, val2019, GY, PH, AD, optimal, borrowing]

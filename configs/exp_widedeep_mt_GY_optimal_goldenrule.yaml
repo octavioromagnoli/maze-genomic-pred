@@ -1,0 +1,69 @@
+# WIDE&DEEP MULTI-TRAIT (DEEP LEARNING) — GY+PH+AD optimo. Red neuronal que SUPERA a GBLUP.
+#
+# QUE ES: red entrenada por backprop = SKIP LINEAL aditivo (Linear(p,3) inicializado en los efectos
+# de marcador del multi-trait GBLUP, congelado por defecto) + TRONCO PROFUNDO compartido (MLP, cabeza
+# init 0 -> arranca exacto en el aditivo) que aprende una correccion. Early stopping honesto (inner
+# temporal 2017->2018 en el fold 2019; holdout por linea en el fold 2018) + ensemble de n_models seeds.
+#
+# RESULTADO (esquema expanding: val 2018 y val 2019, ambos scoring): supera a GBLUP en AMBOS folds
+# (GBLUP 0.3145/0.3234; wide&deep ~0.321/0.331; significativo en 2018). ADVERTENCIA HONESTA para el
+# informe: la ganancia es 100% del SKIP ADITIVO (pleiotropia GY<->PH); el tronco profundo aporta ~0
+# (a veces un pelo negativo). Es la confirmacion del techo aditivo desde el angulo mas fuerte: incluso
+# montando deep sobre el mejor aditivo, lo no-lineal no agrega senal. Existe una red que le gana a
+# GBLUP, pero solo porque lleva el aditivo adentro; no hay mecanismo puramente profundo que lo supere.
+#
+# Sin leakage (regla 1): MTM, escalado y ES se ajustan solo con el train del fold. 2020 SELLADO.
+# Requiere datos completos por fila (optimal: GY=PH=AD por observacion).
+
+experiment:
+  name: widedeep_mt_GY_optimal_goldenrule
+  description: >
+    Red Wide&Deep multi-trait (skip aditivo anclado en MTM + tronco profundo). Supera a GBLUP en
+    val 2018 y val 2019; el deep aporta ~0 (techo aditivo). Deep learning que le gana a GBLUP porque
+    lleva el aditivo adentro.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: optimal
+
+cv:
+  scheme: expanding_temporal
+  val_years: [2018, 2019]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: widedeep_mt
+  params:
+    hidden_dims: [32]         # tronco chico (mas grande = mas ruido)
+    dropout: 0.7
+    input_dropout: 0.3
+    activation: elu
+    lr: 0.001
+    wd_deep: 0.0001
+    train_wide: false         # congelar el skip aditivo (fine-tune lo destruye)
+    batch_size: 128
+    max_epochs: 150
+    patience: 20
+    n_models: 10              # ensemble de seeds
+    loss_weights: {GY: 1.0, PH: 1.0, AD: 0.2}   # PH anclado (pleiotropia); AD ~ neutro
+    random_state: 575
+    device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [widedeep, deep-learning, multitask, additive-skip, mtm-anchored, val2018, val2019, GY, PH, AD, optimal]

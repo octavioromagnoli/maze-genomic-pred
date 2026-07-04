@@ -1,0 +1,52 @@
+# MULTI-TRAIT GBLUP (MTM) — GY+PH+AD optimo — DEMOSTRACION DE LA REGLA DE ORO en UNA corrida.
+#
+# Igual que exp_mtm_gblup_GY_optimal_2017_2018_to_2019.yaml pero con esquema EXPANDING TEMPORAL:
+# evalua DOS folds de scoring, ambos temporalmente validos, para chequear que la mejora sobre GBLUP
+# es ROBUSTA (regla de oro del proyecto: ganar en 2019 Y en 2018, no solo en el fold de seleccion):
+#   - val 2018: train = {2017}          (out-of-sample honesto; el fold donde el MLP multitask empata)
+#   - val 2019: train = {2017, 2018}    (analogo deploy para el modelo final de 2020)
+#
+# Baselines GBLUP-REML (single-trait) en este harness: 0.3234 (2018) y 0.3145 (2019). El MTM da
+# ~0.3334 (2018) y ~0.3199 (2019): positivo en AMBOS, significativo en 2018 (IC excluye 0). 2020
+# SELLADO. Estandarizacion train-only por fold DENTRO de fit (regla 1). Datos completos por fila.
+
+experiment:
+  name: mtm_gblup_GY_optimal_goldenrule
+  description: >
+    Multi-trait GBLUP GY+PH+AD optimo, dos folds de scoring (val 2018 train 2017; val 2019 train
+    2017+2018) para verificar la regla de oro: la mejora sobre GBLUP es robusta en ambos anios.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: optimal
+
+cv:
+  scheme: expanding_temporal
+  val_years: [2018, 2019]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: mtm_gblup
+  params:
+    n_iter: 300
+    tol: 1.0e-7
+    ridge: 1.0e-3
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mtm, gblup, multitask, additive, goldenrule, val2018, val2019, GY, PH, AD, optimal]

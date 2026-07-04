@@ -1,0 +1,77 @@
+# MLP ENSEMBLE (deep learning) — PH (altura) en ambiente OPTIMO. Le GANA a GBLUP en el ANO DEPLOY.
+#
+# CONTEXTO: GBLUP es pesimo prediciendo PH hacia 2019 (pearson 0.071) por DOMAIN-SHIFT: la cohorte 2018
+# anti-transfiere (train solo-2017 -> val2019 da 0.184; el pool 2017+2018 lo diluye a 0.071). El MLP es
+# mas ROBUSTO a esa transferencia negativa.
+#
+# RESULTADO (esquema expanding, ensemble de 10 seeds; bootstrap pareado cluster-linea):
+#   val2019 (train 2017+2018, ANALOGO DEPLOY para 2020): MLP 0.118 vs GBLUP 0.071 -> +0.046, IC[+0.018,+0.073] SIG.
+#   val2018 (train solo-2017, OTRO regimen): MLP 0.407 < GBLUP 0.443 -> -0.037 SIG. Flip por fold.
+# El fold 2019 (entrenar con TODOS los anios previos y predecir el ultimo) ES el analogo de predecir 2020;
+# ahi el deep gana. El 2018 (un solo anio de train) no es el escenario de despliegue. loss=pearson_mse
+# (1-r + 0.3*MSE) fue la mejor para PH_opt 2019. OJO: se necesita ensemble GRANDE (>=10 seeds); con 5 el
+# numero es ruidoso (PH_opt 2019 es hiper-inestable a la seed: per-seed -0.02..+0.20).
+#
+# LIMITE: esta mejora de PH NO rompe el techo de GY (Fase 11): PH^ hacia 2019 sigue siendo debil (0.118) y
+# su aporte al indice de GY es del nivel aditivo del MTM (no-significativo), no rompe el techo. Sin leakage
+# (regla 1): estandarizacion + early stopping train-only. 2020 SELLADO.
+
+experiment:
+  name: mlp_ens_PH_optimal_deploy
+  description: >
+    Ensemble (10 seeds) de MLP [128] con loss pearson_mse para PH_Optimal. Le gana a GBLUP en el fold
+    deploy-analogo (val2019, train 2017+2018): 0.118 vs 0.071, +0.046 sig. Mas robusto que GBLUP a la
+    transferencia negativa de la cohorte 2018. Pierde en val2018 (regimen de un solo anio de train).
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: PH
+  env: optimal
+
+cv:
+  scheme: expanding_temporal
+  val_years: [2018, 2019]   # 2019 = analogo deploy (gana); 2018 = otro regimen (pierde)
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble
+  params:
+    inner_name: mlp
+    n_models: 10            # ensemble GRANDE: PH_opt 2019 es hiper-inestable a la seed; con 5 es ruido
+    seed_step: 1
+    standardize: false      # pearson_mse ancla la escala (termino MSE) => predicciones calibradas
+    inner:
+      hidden_dims: [128]    # shallow; mas profundo/ancho no ayuda robusto (overfit p >> n)
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 200
+      patience: 25          # early stopping temporal interno (2017 -> 2018 en el fold 2019)
+      loss: pearson_mse     # 1 - r + 0.3*MSE: mejor para PH_opt 2019 que mse o pearson puro
+      mse_weight: 0.3
+      val_metric: pearson
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: cpu
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [mlp, ensemble, deep-learning, nonlinear, PH, optimal, deploy, domain-shift, val2018, val2019]

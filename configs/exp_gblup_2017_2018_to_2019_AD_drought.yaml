@@ -1,0 +1,44 @@
+# GBLUP — train 2017+2018 -> predecir 2019 sobre AD_Drought (dev, NO toca el holdout 2020).
+# Baseline lineal de referencia para la Fase 11 (¿la no-linealidad mejora AD en sequia?). lambda_0 por REML.
+# Resultado Fase 11: en sequia el MLP NO le gana a GBLUP en AD (a diferencia de optimal).
+
+experiment:
+  name: gblup_reml_2017_2018_to_2019_AD_drought
+  description: >
+    GBLUP entrenado con 2017+2018 y evaluado sobre 2019 para AD_Drought (dias a floracion en sequia).
+    Baseline lineal para contrastar contra el MLP en la Fase 11. lambda_0 = sigma_E^2/sigma_u^2 por REML.
+    2020 queda como holdout intocable.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: AD
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [gblup, reml, dev, train2017-2018, val2019, AD, drought, baseline]

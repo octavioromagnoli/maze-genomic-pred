@@ -19,6 +19,9 @@ from src.models.gblup import GBLUP
 from src.models.gblup_residual import GBLUPResidualRegressor
 from src.models.mlp import MLPRegressor
 from src.models.mlp_multitask import MLPMultitaskRegressor
+from src.models.mtm_gblup import MTMGBLUPRegressor
+from src.models.sparse_genomic import SparseGenomicRegressor
+from src.models.widedeep_mt import WideDeepMTRegressor
 from src.models.xgb import XGBoostRegressor
 
 REGISTRY: dict[str, type[BaseModel]] = {
@@ -28,8 +31,11 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "xgboost": XGBoostRegressor,
     "mlp": MLPRegressor,
     "mlp_multitask": MLPMultitaskRegressor,
+    "mtm_gblup": MTMGBLUPRegressor,
+    "widedeep_mt": WideDeepMTRegressor,
     "ensemble_multitask": EnsembleMultitaskRegressor,
     "ensemble": EnsembleRegressor,
+    "sparse_genomic": SparseGenomicRegressor,
     "cbeta_vae": CBetaVAERegressor,
 }
 

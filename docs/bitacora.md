@@ -767,3 +767,637 @@ del régimen del sweep**: con 1 año de train (2017) no hay inner-val, así que 
 solo existe `train_loss` (la curva de val aparece solo con early stopping, ≥2 años). Los
 200 trials ya corridos no tienen curva (no se puede recuperar); aplica a corridas futuras.
 En el notebook las learning curves de los 3 MLP finales se grafican desde `history_`.
+
+## Fase 7 — Modelo sparse (selección de variables): el mayor salto en sequía
+
+**Objetivo:** atacar la portada (GY drought) por el ángulo que faltaba: la **arquitectura
+genética** del trait. GBLUP es un modelo *infinitesimal* (prior gaussiano de igual varianza
+sobre TODOS los marcadores ≡ ridge sobre `G=ZZ'/p`); es óptimo cuando el trait es muy
+poligénico, pero **sub-óptimo cuando unos pocos loci de efecto grande dominan**. La hipótesis:
+GY bajo sequía tiene arquitectura más rala que en óptimo, así que un estimador de **selección
+de variables** (LASSO = MAP de un prior Laplace, el análogo frecuentista de BayesB) debería
+ganarle a GBLUP en sequía. Resultó ser, por lejos, el mayor salto del proyecto sobre GBLUP.
+
+### Diagnóstico de arquitectura (train 2017+2018, GWAS single-marker)
+Regresión marcador-a-marcador sobre el train, χ² ≈ n·r² por SNP:
+- **GY óptimo:** 2751 marcadores significativos (Bonferroni), χ²_max ≈ 636 → señal densa y fuerte,
+  repartida en muchísimos loci ⇒ **infinitesimal** ⇒ GBLUP es el techo.
+- **GY sequía:** 634 significativos, χ²_max ≈ 114 → mucho menos marcadores con señal y efectos
+  más chicos ⇒ arquitectura **más rala** ⇒ hay lugar para selección de variables.
+
+La heredabilidad genómica (REML `σ²_u/(σ²_u+σ²_E)`) es parecida entre ambientes (GY óptimo
+0.47–0.60, sequía 0.39–0.67 según año), así que la diferencia no es "cuánta señal hay" sino
+**cómo está distribuida** entre marcadores.
+
+### Modelo: `sparse_genomic` (LASSO/ElasticNet baggeado)
+[`src/models/sparse_genomic.py`](../src/models/sparse_genomic.py), registrado como
+`sparse_genomic`. Respeta la interfaz común y las reglas:
+- **Estandarización train-only** de marcadores DENTRO de `fit` (z-score por SNP, igual que
+  GBLUP; la L1 no es invariante a escala y los SNP binarios tienen varianza `p(1-p)` que
+  varía ~5× entre MAF 0.05 y 0.5). No usa el bloque `preprocess:` (marcadores crudos, como GBLUP).
+- **`alpha` por inner-CV TEMPORAL** (regla 3): con train 2017+2018 ⇒ inner 2017→2018; con los 3
+  años ⇒ inner 2017+2018→2019. Se elige el `alpha` que maximiza el Pearson de inner-val (portada).
+- **Bagging = análogo del ensemble multi-seed de la red.** Un LASSO single-fit es de **alta
+  varianza** ante submuestreo del train (en LD, L1 elige arbitrariamente uno de varios marcadores
+  correlacionados). Baggear —promediar coeficientes sobre subsamples— reduce esa varianza. Como
+  baggear un lineal ≡ promediar coeficientes, `predict` es un solo `Z @ coef_` (misma idea que la
+  representación rrBLUP de GBLUP). Persistencia por joblib (numpy puro); round-trip exacto verificado.
+
+### Resultado (portada, GY sequía, train 2017+2018 → val 2019, n=721)
+Vía `run_evaluation` (pipeline oficial; verificado idéntico al harness rápido) y delta pareado por
+bootstrap cluster a nivel línea:
+
+| modelo | Pearson [IC95%] | Δ vs GBLUP (pareado) |
+|---|---|---|
+| GBLUP-REML (baseline) | 0.2413 [0.172, 0.309] | — |
+| MLP multienv + XGB (SOTA previo) | ~0.333 | +0.092 |
+| **LASSO baggeado (sparse)** | **0.3942 [0.331, 0.451]** | **+0.152 [+0.118, +0.184]** |
+
+**+0.15 de Pearson sobre GBLUP (+63 % relativo, 0.24 → 0.39)**, y **+0.06 sobre el mejor modelo
+previo**. matching20 = 0.43 (recupera el 43 % del top-20 % de líneas vs 20 % al azar). El alpha
+elegido (~0.043) selecciona un núcleo de ~40–100 marcadores estables (69 en ≥50 % de los bags).
+
+### Robustez (lo que lo distingue de los falsos positivos de fases anteriores)
+- **Determinista** (no hay lotería de seed como en la red): la seed del bagging mueve el Pearson
+  con sd 0.005 (esencialmente fijo). Elimina de raíz la fuente #1 de winner's curse del proyecto.
+- **Le gana a GBLUP en el 100 % de 20 submuestreos del train** (85 % de líneas), minΔ = **+0.059**,
+  con la misma dispersión que GBLUP (sd 0.030). El bagging es lo que convierte el LASSO single-fit
+  (frágil: frac(Δ>0)=0.80, minΔ=−0.145, número full-train inflado en el máximo de su distribución)
+  en un predictor robusto.
+- **Regla de oro (aparece en un 2º fold de alta potencia):** LOYO train {2017,2019} → val **2018**
+  (n=1418) da Δ **+0.062** [+0.021, +0.101]. No es idiosincrasia de 2019.
+
+### Caveats honestos (documentados, no escondidos)
+- **Necesita train adecuado (≥2 años).** Con 1 solo año (2017→2018) el LASSO PIERDE (−0.034): la
+  selección de marcadores con n=901 es inestable. El salto grande aparece con ≥2 años; para 2020 el
+  train son los 3 años de dev ⇒ régimen favorable. Por eso el número honesto de sequía se reporta
+  con train 2017+2018 (≥2 años), no con el 2017→2018 single-year.
+- **Es específico de GY×sequía.** PH y AD bajo sequía **no** se benefician (LASSO ≈ o < GBLUP),
+  así que no es un fenómeno genérico de "sequía = ralo": es la arquitectura de *este* trait×ambiente.
+- **En óptimo LASSO PIERDE** (control por `run_evaluation`: 0.139 vs GBLUP 0.315), consistente con
+  su arquitectura infinitesimal. **Veredicto general: el mejor modelo depende de la arquitectura del
+  trait×ambiente** — GBLUP para óptimo (poligénico), sparse para sequía (más ralo).
+- **El blend no aporta (puerta cerrada).** GBLUP + LASSO + XGB en sequía 2019 correlacionan ~0.82
+  entre sí; el blend **oracle** (techo post-hoc sobre 2019) da 0.393 = LASSO sola (pesos G=0, L=0.7,
+  X=0.3) y el blend **honesto** (pesos elegidos en inner 2017→2018) EMPEORA a 0.323 (ruido de
+  selección de pesos, mismo patrón que la selección de α en un solo año). El LASSO baggeado ya captura
+  la señal explotable; XGB (no lineal) y GBLUP no suman ni en el techo ⇒ la red multienv (más débil,
+  ~0.32, correlación similar) tampoco lo haría. **El modelo de sequía es LASSO baggeado solo** — el más
+  simple es el mejor y, encima, determinista.
+
+### Configs y verificación
+- Dev/reporte: [`exp_sparse_lasso_GY_drought_2017_2018_to_2019.yaml`](../configs/exp_sparse_lasso_GY_drought_2017_2018_to_2019.yaml)
+  (Pearson 0.3942 por `run_evaluation` y por `scripts/train.py` offline).
+- Sweep confirmatorio (grid chico l1_ratio×select_by): [`sweep_sparse_lasso_drought.yaml`](../configs/sweep_sparse_lasso_drought.yaml).
+- **TEST FINAL 2020** (sellado, correr una sola vez al cierre): [`exp_sparse_lasso_GY_drought_final_2020.yaml`](../configs/exp_sparse_lasso_GY_drought_final_2020.yaml)
+  (train 2017+2018+2019 → 2020, n_bags=40, `save_model`). Se compara contra GBLUP-drought
+  reentrenado igual. 2020 intocable hasta entonces.
+- Verificado: pipeline oficial == diagnóstico (Pearson 0.3942), save/load round-trip exacto
+  (max|Δpred|=0), `sparse_genomic` registrado y ruteado por `train.py` (single-task).
+
+### ¿Se puede superar el LASSO con una red? No — el techo es la señal, no el modelo
+Exploración exhaustiva de variantes de red y refinamientos (todo multi-seed/bagged, delta pareado,
+chequeo de la regla de oro en 2018): **nada supera de forma robusta al bagged-LASSO (0.390)**.
+- **Red densa MSE** (hidden [64], 10 seeds): 0.358 < LASSO. **Red con group-L1 en la entrada**
+  (selección de marcadores, MSE para que el L1 tenga dientes): cualquier L1 fuerte empeora; máximo = la
+  densa 0.358. **LassoNet** (skip lineal + MLP): < LASSO.
+- **Probe de no-aditividad** (MLP sobre los top-K marcadores que elige LASSO): K=50 da 0.404 en 2019
+  (Δ+0.013, **no significativo P=0.80**) pero **FALLA la regla de oro**: en 2018 Δ−0.044 (P=0.00, peor).
+  El "0.404" es ruido de 2019 ⇒ **no hay interacciones/no-aditividad explotables** (coherente con el
+  blend oracle GBLUP+LASSO+XGB = LASSO).
+- **Sparse autoencoder** (latente BCE + L1, regla 4): latente→LASSO 0.32–0.34 (comprimir pierde la info
+  de marcadores); latente+crudos ≈ LASSO. No aporta.
+- **MultiTaskLasso** (soporte compartido opt+dro): gana solo en →2019 (0.419) y pierde en →2017/→2018
+  (GxE: corr opt-dro 0.14 mete marcadores de optimal inútiles en sequía). No robusto.
+- **Relaxed/adaptive LASSO** (debiasar el soporte): EMPEORA (→2018 Δ−0.073): el shrinkage del L1 es
+  regularización beneficiosa en p≫n.
+
+**Lectura:** la señal de GY drought es **lineal-aditiva y sparse** ⇒ LASSO (con bagging para bajar la
+varianza) está en el techo; una red solo puede ganar si hay no-linealidad, y no la hay. El número
+robusto de la portada es **bagged-LASSO 0.390** (el single-fit 0.408 y el MTL 0.419 en 2019 están
+inflados/no-robustos). Se prioriza el robusto sobre el punto más alto pero frágil.
+
+### Segunda vuelta (más ideas nuevas): el patrón universal 2019-sí / 2018-no
+Barrido adicional pedido para exprimir todavía más el LASSO (attention, ideas transductivas, y otras).
+Todo con multi-seed, delta pareado (cluster por línea) y el chequeo de la **regla de oro en 2018**.
+Emergió un patrón nítido: **casi todo mejora →2019 (el fold análogo a deploy) y falla →2018**.
+- **Warm-start net** (LASSO congelado + MLP residual muy regularizado, γ inicial 0): lo mejor de las
+  redes — 2019 Δ**+0.020** (P=1.00) y 2018 Δ=0.000 exacto (nunca daña). Pero el **nested subsample lo
+  mata**: perturbando el train al 85%, Δ→+0.0015 con frac>0=**0.58** (moneda). El +0.020 era del
+  train puntual. No robusto.
+- **Idea transductiva** ("que el modelo atienda a lo parecido al año target", usando la X de 2019/2018
+  que sí está disponible): (a) penalizar marcadores que *driftean* train↔target → 2019 +0.0075 pero
+  **2018 −0.014**; (b) pesar líneas de train por parecido genómico al target → DAÑA en toda escala. Falla.
+- **Estabilidad cruzada entre años** (quedarse con marcadores reproducibles en 2017 *y* 2018): solo
+  **6 de 341** son reproducibles → filtrar destruye la señal (la potencia viene de poolear los años).
+- **Multi-trait GY+PH+AD** (borrow strength de traits secundarios más heredables): el soporte compartido
+  **daña** GY (−0.10 en 2019). Los marcadores de PH/AD no son los de GY.
+- **Adaptive LASSO** bien implementado (des-shrinkear los efectos grandes, proxy frecuentista de
+  BayesB/SCAD): 2019 +0.015 pero **2018 −0.037** (P=0.00). Junto con relaxed (−0.073) y ElasticNet
+  (peor), **cierra la familia de shrinkage adaptativo sin necesidad de MCMC**: el shrinkage uniforme
+  del L1 ya es ~óptimo (no hay QTL grandes limpios que debiasar).
+- **Random-subspace LASSO** (*Random-LASSO*, Wang 2011): **lo único robusto en 2019**. Cada base-LASSO
+  ve un subset aleatorio de marcadores (frac 0.7) → decorrelaciona qué marcador de cada grupo en LD se
+  elige y baja la varianza del coef promediado **más** que el bagging por muestras. →2019 Δ**+0.006**
+  (P=0.99), reproducido en 4 implementaciones (incl. la clase real: 0.3942→0.4006), y **sobrevive el
+  nested subsample: frac>0 = 1.00** (gana en las 12 perturbaciones, min +0.0009) — lo contrario del
+  warm-start. En →2018 es **NEUTRO dentro del ruido**: el punto matched (nb60, 5 seeds) da Δ−0.004
+  (P=0.08) pero el nested subsample da +0.004 (frac>0=0.67, min −0.012/max +0.019) — el signo es
+  inestable. A diferencia de adaptive (−0.037) / drift (−0.014) / probe-MLP (−0.044) que **dañan claro**
+  2018, random-subspace **no lo daña**; pero tampoco lo **mejora** claramente ⇒ no pasa el criterio
+  estricto de la regla de oro (ganar en AMBOS). Es lo más cerca que estuvo algo de ganar en los dos.
+  Se agregó como parámetro **`subspace_frac`** en `sparse_genomic.py` (default **1.0** = bagged-LASSO
+  exacto, backward-compatible; `0.7` activa el random-subspace) y se **ADOPTÓ `subspace_frac=0.7`
+  (nb=60)** en los configs de dev y de 2020 final — es la única mejora robusta y estable hallada, chica
+  (~piso de ruido en absoluto) pero nunca dañina; `1.0` queda como fallback conservador.
+
+### Tercera vuelta (post-revisión): no-linealidad, transfer y LOYO — descartados; lección de método
+Empujando aún más (redes/attention ya cubiertos), se probaron hipótesis NUEVAS y ninguna sobrevive:
+- **RKHS gaussiano** (kernel ridge = GBLUP no-lineal; ~red de ancho infinito): **daña** (2019 0.31, Δ−0.078).
+  Cierra la no-aditividad también en el espacio de PARENTESCO (no solo en SNPs) ⇒ por eso ninguna red ayuda.
+- **Transfer desde el ambiente ÓPTIMO** (usar |β| de LASSO-optimal como pesos de penalidad para sequía):
+  **daña** (2019 Δ−0.025 a −0.046). Muro GxE (corr 0.14): los marcadores de optimal no son los de sequía.
+- **LOYO-alpha** (elegir la regularización por leave-one-year-out): **artefacto, rechazado.** En scratchpad
+  aparentaba +0.019 en 2018, pero era doble artefacto: (a) el baseline del scratchpad elegía un alpha malo
+  (0.041) que la **clase real ya evita** (temporal elige 0.073, el "bueno" que LOYO supuestamente hallaba);
+  (b) con 2 años LOYO es inestable (nested 2019 mean−0.020, frac>0=0.33, min−0.108 catastrófico). Revertido.
+  **Lección de método: verificar SIEMPRE por la clase real productizada, no por el scratchpad — un baseline
+  débil de scratchpad infla ganancias aparentes** (por eso RSS, que se validó por la clase real, sí se adopta).
+
+**Conclusión reforzada:** tras dos vueltas exhaustivas, **ningún método —red, transductivo,
+multi-trait, o refinamiento de shrinkage/ensemble— supera al bagged-LASSO de forma robusta en AMBOS
+folds.** El fold →2019 (deploy-análogo) tiene señal que →2018 (interpolación) no comparte, y por eso
+tanto método "gana en 2019"; la regla de oro (exigir ambos) los descarta. La **única mejora amplia y
+robusta del proyecto sigue siendo LASSO sobre GBLUP (+0.15, +63% en sequía)** — no algo sobre LASSO.
+`subspace_frac=0.7` es la única palanca que mejora el fold deploy-análogo de forma robusta (+0.006,
+matched nb, nested frac>0=1.00) y es **neutra** (dentro del ruido) en el fold 2018 — nunca lo daña. Se
+**adoptó** en los configs (dev y 2020) como el modelo de portada de sequía; `1.0` queda como fallback.
+No existe una mejora *ampliamente* significativa sobre el LASSO: estamos en el techo de predictibilidad
+genómica (señal aditiva+sparse). La mejora amplia del proyecto es LASSO sobre GBLUP (+63%).
+
+## Fase 8 — Sparsity × no-linealidad con deep learning: por qué no hay techo que romper
+
+**Objetivo:** atacar de frente la pregunta que quedaba abierta —¿se puede superar el bagged-LASSO
+(0.400 en drought) combinando **sparsity con no-linealidad** mediante deep learning complejo?—. Las
+vueltas previas (Fase 7) ya habían descartado varias redes, pero por el ángulo de "probar modelos". Acá
+se ataca por dos ejes NUEVOS y ortogonales, con un **diagnóstico model-agnostic** que explica el
+mecanismo, no solo el resultado. Protocolo: la **regla de oro** del proyecto (ganar en AMBOS folds:
+`deploy2019` train 2017+2018→2019 y `golden2018` LOYO train 2017+2019→2018), delta pareado y, para
+cualquier candidato que asome, chequeo de replicación out-of-sample. 2020 sellado. Baselines del
+campeón (bagged random-subspace LASSO, `subspace_frac=0.7`, nb=60): **deploy2019 = 0.4006**,
+**golden2018 = 0.2650** (reproducidos exactos).
+
+### Punto de partida conceptual: con SNPs binarios, no-linealidad = epistasis
+Los marcadores son binarios `{0,1}` ⇒ una función por-marcador toma 2 valores = un coeficiente lineal
+la captura exacta (**no hay dominancia con 2 estados**, y por eso un Neural Additive Model colapsa a
+lineal). La ÚNICA no-linealidad genotípica posible es la **epistasis** (interacciones SNP×SNP). El probe
+de Fase 7 (MLP sobre los top-50 marcadores marginales) solo miraba interacciones entre marcadores con
+efecto marginal fuerte; los árboles de XGBoost hacen splits greedy guiados por lo marginal (fallan la
+epistasis pura tipo XOR). Faltaba el detector correcto: **interacciones explícitas + selección sparse**,
+que alcanza epistasis entre marcadores de efecto marginal **nulo**.
+
+### Eje 1 — Reluctant Sparse Interaction LASSO (epistasis explícita, screen COMPLETO)
+Método (Yu, Bien & Tibshirani 2019, *reluctant interaction selection*): (1) ajustar el campeón aditivo,
+residual `r`; (2) **screen de las ~10.6M interacciones pairwise** `Zi·Zj` contra `r`, barato vía
+matrices tipo Gram `p×p` (`N=Zᵀdiag(r_c)Z/n`, `var=Q−G²`), rankear por `|corr(Zi·Zj, r)|` y quedarse con
+las top-T; (3) bagged-LASSO sobre esas T interacciones prediciendo `r`. Todo train-only (el screen, el
+z-score y las features de interacción se congelan en train). A diferencia del probe MLP-top50, este
+screen COMPLETO alcanza interacciones de marcadores sin señal marginal.
+
+Resultado: **daña en los dos folds, en todo T**.
+
+| T interacciones | deploy2019 (Δ) | golden2018 (Δ) |
+|---:|---|---|
+| 1000 | 0.284 (−0.116) | 0.113 (−0.152) |
+| 3000 | 0.340 (−0.061) | 0.179 (−0.086) |
+| 8000 | 0.340 (−0.061) | 0.195 (−0.071) |
+
+### Diagnóstico decisivo (model-agnostic): las interacciones NO replican out-of-sample
+Test independiente de cómo se ajusten: se toman las top-2000 interacciones por `|corr|` con el residual
+de **train** y se mide su correlación con el residual de **val** (mismas parejas). Si hubiera epistasis
+explotable, las de mayor corr en train deberían correlacionar —con el mismo signo— en val.
+
+- **deploy2019:** `|corr|` train hasta 0.164; en val la fracción de **mismo signo = 0.535** (≈0.5 =
+  ruido puro), `rank-corr(|train|,|val|) = −0.01`, la top-1 interacción tiene corr en val de **+0.004**
+  (cero). La estructura "más fuerte" en train es ruido.
+- **golden2018:** `|corr|` train hasta 0.192; en val **mismo signo = 0.438** (por DEBAJO de 0.5) y
+  `corr(cc_train, cc_val)` con signo = **−0.151**: las interacciones top de train **anti-replican** en
+  val. Elegir interacciones por train no solo no ayuda, apunta en contra.
+
+Esto es lo que ninguna vuelta anterior había mostrado: **la razón mecánica** por la que toda red falla
+—no hay señal epistática que replique entre cohortes; lo que un modelo flexible "encuentra" es ruido de
+train—. Es el argumento killer porque no depende de la implementación del modelo.
+
+### Eje 1' — Sparse Interaction Machine neuronal (FM factorizada + gate sparse)
+Confirmación desde el lado del modelo flexible. Red = **skip aditivo congelado** (campeón, coef 1) +
+cabeza no-lineal sobre el soporte sparse que elige el LASSO: **Factorization Machine** (interacciones
+pairwise low-rank `½[(ZV)²−Z²V²]`, O(s·k)) + gate `sigmoid` con L1 por marcador (sparsity dentro del
+soporte) + opcional MLP residual (orden superior). `γ` (escala de la cabeza) init 0 ⇒ arranca EXACTO en
+el campeón. Loss `1−Pearson` + L1(gate) + L2(V), ensemble multi-seed. Dos regímenes:
+
+- **Free-running (300 épocas):** daña fuerte (deploy 0.15–0.26, golden 0.12–0.19) y `γ` tiene varianza
+  ENORME entre seeds (media ~0, sd 0.4–1.0): la cabeza ajusta puro ruido, distinto en cada seed.
+- **Honest early-stop temporal** (inner-val = último año del train, con el skip del campeón calculado
+  fuera de muestra; se elige la época que maximiza Pearson de inner-val, protocolo del MLP del proyecto):
+  sigue **dañando** (deploy 0.33–0.35, Δ−0.05 a −0.12; golden 0.25–0.25, Δ−0.01 a −0.04) y `best_ep`
+  es inestable (59±111): los seeds no coinciden en cuándo parar porque no hay señal que hallar.
+
+### Eje 2 — Sparse Mixture-of-Experts (heterogeneidad de líneas, gating no-lineal)
+Eje ORTOGONAL: en vez de interacciones de features, modelar **heterogeneidad de arquitectura entre
+líneas**. Skip aditivo congelado + K **expertos lineales sparse** (L1) sobre el soporte, ruteados por un
+**gate no-lineal** (MLP sobre PCs del genotipo) por línea: `y = y_main + Σ_k gate_k(pc)·(Z_sup·w_k)`. La
+no-linealidad está en el ruteo (piecewise-linear en el espacio de genotipo). Expertos warm-start 0,
+honest early-stop, multi-seed. Hipótesis: distintas líneas se predicen mejor con distinta combinación de
+marcadores.
+
+Resultado: **daña en ambos folds** (K∈{2,4,8}: deploy 0.29–0.34, Δ−0.06 a −0.11; golden 0.24–0.25,
+Δ−0.02 a −0.03) y con early-stop honesto `best_ep≈4–11`: el inner-val quiere **quedarse en el campeón**
+(W→0). Coherente con la memoria (el oráculo a nivel AÑO daba solo +0.003): no hay headroom en mezclar
+subpoblaciones tampoco. (La estructura poblacional del EDA es difusa; el eje real es el año, ya agotado.)
+
+### Eje 3 — No-linealidad en el link de salida (recalibración monótona/spline)
+Mecanismo que ningún experimento previo tocó (todos asumían link lineal): el campeón da un score lineal
+sparse `s=Zw`; si `E[y|genotipo]=g(s)` con `g` no-lineal monótona, recalibrar `s→g(s)` subiría el Pearson
+(invariante a afín, NO a monótona). `g` se aprende HONESTA sobre predicciones out-of-fold (inner temporal
+del train). Resultado: **falla la regla de oro y daña fuerte en golden2018**. Polinomio grado-2 da
+deploy2019 +0.0036 (ruido, dentro del sd~0.005 del campeón) pero **golden2018 −0.175**; grados 3/5 e
+isotónica dañan en ambos (golden2018 hasta −0.42). El coeficiente cuadrático de `g` en el inner-val es
+grande (0.16–0.70) pero **espurio**: la curvatura ajustada en un año anti-generaliza al otro. El link
+también es lineal.
+
+### Contexto del techo: es una pared de información, no de modelo
+El campeón captura `r²=0.160` en deploy2019; con `h²_SNP≈0.45–0.55` (REML, Fase 7) eso es solo el
+**~29–36 %** del techo genético in-sample. La brecha restante la fija la **relatedness cross-cohorte + n**
+(predecir un año de líneas disjuntas desde otros), NO la no-linealidad faltante: por eso agregar
+capacidad no-lineal solo agrega varianza (daña). Es el patrón conocido en predicción genómica —la
+accuracy entre cohortes está limitada por parentesco, y la varianza epistática, aunque exista, **no
+predice out-of-sample** a través de la estructura de parentesco (la "missing heritability" epistática no
+es útil predictivamente).
+
+### Veredicto (honesto) y qué NO se productiviza
+Tres ejes independientes (epistasis de features + heterogeneidad de líneas + link de salida), **cinco
+métodos nuevos** (reluctant interaction LASSO, FM neuronal free y honest-ES, Sparse MoE, recalibración
+no-lineal del link) y **cero** mejora robusta: todos DAÑAN en ambos folds (o solo tocan +0.003 de ruido en
+2019 y destrozan 2018), y el diagnóstico de replicación explica por qué. Ninguno se agrega a `src/models` ni a los
+configs (norma del proyecto: se adopta solo lo que gana robusto; acá no gana nada). El modelo de portada
+de sequía **sigue siendo el bagged random-subspace LASSO (0.400)**; el de óptimo, GBLUP. Para el informe
+esto es un resultado **fuerte, no un fracaso**: se descarta la no-linealidad explotable con el detector
+correcto (screen completo de epistasis) y un test de replicación out-of-sample, cerrando de raíz el
+ángulo "deep learning complejo vencería al lineal". La única mejora amplia del proyecto es, y queda,
+**LASSO sobre GBLUP (+63 % en sequía)**; el techo es aditivo+sparse y es informacional.
+
+## Fase 8 — Multi-trait GBLUP: la única mejora ADITIVA y ROBUSTA sobre GBLUP en óptimo
+
+**Objetivo:** revisar si el sweep del MLP multitask ensemble (`23v91t2s`, GY+PH+AD óptimo, train
+2017+2018 → val 2019) que "le gana a GBLUP" es real o winner's curse, y si hay una mejora
+robusta que rescatar. Resultó que la red es winner's curse, pero el mecanismo que insinúa
+(pleiotropía PH↔GY) sí da una mejora **cuando se lo implementa con la herramienta aditiva
+correcta**: GBLUP multi-trait.
+
+### El multitask neuronal es winner's curse (empata en 2018)
+El top del sweep reporta Pearson GY **0.3439** en val 2019 (vs GBLUP-REML **0.3145**). Re-evaluado
+honesto con un ensemble fresco de 8 seeds del mismo config, el edge se encoge y **no replica fuera
+del fold de selección**:
+- **val 2019 (fold de selección):** 0.3376, Δ+0.023 vs GBLUP, **IC95%[−0.005, +0.052] incluye 0**.
+- **val 2018 (out-of-sample honesto, train 2017):** 0.3241 vs GBLUP 0.3234, **Δ+0.0007 (empate plano)**.
+
+Firma clásica de winner's curse (memoria [[redes-no-superan-gblup-optimal]]): gana solo donde se
+eligió el HP, empata en el fold independiente. El ensemble mitiga el ruido de *seed*, no el de
+selección de HP sobre el set de reporte.
+
+**Matiz (selección honesta + seeds frescas):** no es winner's curse *puro*. De los 14 top-por-2019, la mayoría se cae en 2018 (Δ−0.05 a −0.075) y el super-ensemble ingenuo de los 14 falla 2018 (Δ−0.025), pero **existe una sub-región robusta**: elegir el mejor por 2018 aterriza en `x3yci2pl` (2019 +0.023 / 2018 +0.013) y `nkr46w7r` gana ambos también. Clave mecánica: **los únicos configs robustos pesan PH fuerte** (`loss_weights.PH` 0.80–0.86) — el MISMO mecanismo pleiotrópico que el MTM. Pero es **frágil**: reevaluados con 10 seeds FRESCAS e independientes (base 9999) el edge se encoge (x3yci2pl 2019 +0.016 P=0.97 / 2018 +0.007 P=0.92; nkr46w7r 2019 +0.004 empate / 2018 +0.018 P=1.0) y **ningún IC excluye 0 en ambos folds**. El neuronal es una aproximación ruidosa y seed-dependiente de la señal que el **MTM captura determinista** (rank-corr 2019↔2018 solo +0.48).
+
+### Multi-trait GBLUP (`mtm_gblup`): pleiotropía por la vía aditiva
+[`src/models/mtm_gblup.py`](../src/models/mtm_gblup.py), registrado `mtm_gblup`, encaja en el
+dispatch multitask (misma interfaz `fit(X,Y,Y_mask)`/`predict(X)→(n,T)` que `mlp_multitask`).
+GBLUP multivariado: un modelo mixto para GY+PH+AD con covarianza **genética** `G0` (T×T) y
+**residual** `R0` (T×T) estimadas por **REML-EM** sobre la eigen-descomposición de `G=ZZ'/p`
+(`Y=1μ'+U+E`, `U~N(0,G0⊗G)`, `E~N(0,R0⊗I)`; la rotación `Ỹ=V'Y` vuelve las filas T-variadas
+independientes con `Ũ_i~N(0,d_i·G0)` ⇒ EM barato). Efectos de marcador en representación rrBLUP
+`B=ZᵀG⁻¹Û/p` ⇒ `predict` es un solo matmul (como GBLUP). **Determinista** (sin seeds), **aditivo**
+(no apela a no-linealidad ⇒ respeta el techo de líneas endocriadas), **val solo-genotipo** (las
+cabezas PH/AD NO se observan en val; el *borrowing* ocurre en la estimación, no usando fenotipos
+auxiliares del val ⇒ comparación justa con GBLUP). Requiere datos completos por fila (en óptimo
+GY=PH=AD por observación; se cumple).
+
+### Control que valida la implementación y aísla el efecto
+El MTM restringido a **un solo trait (GY)** reproduce **GBLUP-REML EXACTO** (0.3145 en 2019,
+0.3233 en 2018) ⇒ el EM está bien y la ganancia **no** viene de un shrinkage distinto. Toda la
+mejora es **borrowing cross-trait**:
+
+| fold | GBLUP-REML | MTM (GY+PH+AD) | Δ | IC95% del Δ (bootstrap cluster-línea) | P(Δ>0) |
+|------|-----------|----------------|---|----------------------------------------|--------|
+| val 2019 (train 2017+2018) | 0.3145 | **0.3199** | +0.0054 | [−0.0033, +0.0149] | 0.87 |
+| val 2018 (train 2017) | 0.3234 | **0.3334** | +0.0101 | **[+0.0069, +0.0138]** | **1.00** |
+
+**Positivo en AMBOS folds** (dirección de la regla de oro), **significativo en 2018** (n=1418, IC
+excluye 0). Correlación genética estimada `gcorr(GY,PH)=0.71 (2019) / 0.52 (2018)` (fuerte),
+`gcorr(GY,AD)≈0.03–0.41`, `h²_GY≈0.46–0.59`. **PH hace todo el borrowing; AD no aporta**
+(GY+PH ≈ GY+PH+AD), consistente con `corr(GY,AD)≈0`. wandb (ambos folds en una corrida,
+esquema expanding): [`l5sgbbif`](https://wandb.ai/oromagnoli-/maze-genomic-pred/runs/l5sgbbif).
+Configs: [`exp_mtm_gblup_GY_optimal_2017_2018_to_2019.yaml`](../configs/exp_mtm_gblup_GY_optimal_2017_2018_to_2019.yaml)
+(deploy 2019) y [`exp_mtm_gblup_GY_optimal_goldenrule.yaml`](../configs/exp_mtm_gblup_GY_optimal_goldenrule.yaml)
+(regla de oro).
+
+### Techo trait-assisted: si se observa PH en el set a predecir
+Índice de selección (OLS out-of-fold: `GY ~ GEBV_GY + PH_val + AD_val`) que **sí usa el fenotipo PH
+del val** — problema de información distinto (GS asistida por trait secundario, estándar en la
+literatura; PH/AD se miden antes de la cosecha de GY): 2019 **0.368** (Δ+0.054, IC[+0.043,+0.064]),
+2018 **0.446** (Δ+0.123, IC[+0.111,+0.136]), ambos con P(Δ>0)=1.00 y PH aportando casi todo. Es la
+mejora **grande y robusta** disponible, pero rompe la interfaz `predict(X)` (necesita Y de val) y no
+es apples-to-apples con GBLUP genotype-only ⇒ NO se productiviza como modelo; queda documentada como
+el techo si el pipeline de breeding tiene PH del target.
+
+### Veredicto
+Se revisa —sin contradecir— la memoria "nada supera a GBLUP en óptimo": lo que no lo supera es la
+**no-linealidad** (el multitask neuronal es winner's curse). Pero el **multi-trait GBLUP aditivo** sí
+da una mejora **chica, robusta, determinista y principista** (+0.005/+0.010, positiva en 2019 y 2018,
+significativa en 2018) por **pleiotropía aditiva** GY↔PH. Es la primera mejora *fair* del proyecto en
+óptimo que **no se da vuelta a negativo en 2018**. Coherente con el techo aditivo: la ganancia es
+borrowing aditivo entre traits, no varianza no-aditiva. Se adopta a `src/models` + configs (norma:
+se productiviza solo lo que gana robusto). Para el modelo final de 2020 (reentrenar 2017+2018+2019),
+usar `mtm_gblup` sobre GBLUP single-trait; 2020 sigue sellado.
+
+## Fase 9 — Deep learning vs GBLUP en óptimo: sí existe una red que gana, pero el deep es inerte
+
+**Objetivo:** encontrar una arquitectura de DEEP LEARNING que supere a GBLUP en GY óptimo — "algo que
+no probamos". Se testearon 4 arquitecturas genuinamente nuevas (además de descartar una quinta con
+argumento). Veredicto: **el componente profundo/no-lineal SIEMPRE agrega ruido**, pero una red que
+lleva el aditivo adentro (skip lineal anclado en MTM) **sí le gana a GBLUP en ambos folds**.
+
+### Arquitecturas nuevas probadas (GPU, ensemble, IC pareado cluster-línea, seeds frescas)
+Baseline GBLUP-REML 0.3145 (2019) / 0.3234 (2018); MTM (Fase 8) 0.3199 / 0.3334.
+
+1. **Wide&Deep con backbone aditivo APRENDIDO** (`Linear(p,3)` + tronco, todo desde cero, MSE, ES):
+   el skip lineal **no alcanza el shrinkage de GBLUP** (0.298 en 2019) y **overfittea catastrófico en
+   2018** (0.166, sin inner-split temporal para early-stop). Un net lineal from-scratch no reproduce
+   GBLUP (que es ridge con λ por REML), menos aún lo supera.
+2. **Backbone MTM anclado (congelado) + corrección DEEP** (skip init EXACTO en los efectos de marcador
+   del MTM, cabeza deep init 0, ES por línea, ensemble 15): la corrección profunda **DAÑA** vs el MTM
+   puro (2019 0.3182 = −0.002; 2018 0.3278 = −0.006). El deck no-lineal sobre el mejor aditivo resta.
+3. **Fine-tune end-to-end** (backbone MTM + deep, todo entrenable): **colapsa** (2019 0.298, 2018 0.242,
+   Δ−0.02 / −0.08). Adam desarma la solución MTM y overfittea; confirma que el aditivo hay que
+   congelarlo.
+4. **6 cabezas = máxima pleiotropía** (GY/PH/AD × optimal/drought sobre la misma línea). Test aditivo
+   decisivo y barato: **el MTM de 6 traits NO mejora al de 3** — hasta daña (2019 0.2986 = Δ−0.021 vs
+   MTM-3; 2018 empate). Las correlaciones altas de los traits de sequía con GY_opt (AD_dro 0.65,
+   PH_dro 0.36 *pooled*) son **artefacto de medias entre años**, no señal genética within-fold
+   (corr(GY_opt, GY_dro)=0.004). Si el MTM óptimo no extrae nada de los traits extra, un deck de 6
+   cabezas solo overfittearía. Sin headroom.
+5. **CNN 1D sobre orden de SNPs** — DESCARTADA con argumento: las columnas SNP (`L9.` + hash hex,
+   ordenadas lexicográficamente) **no tienen orden posicional genómico** (no reflejan LD/linkage),
+   así que una convolución modelaría adyacencias espurias.
+
+### La red que sí gana: `widedeep_mt` (skip aditivo anclado en MTM + tronco chico)
+[`src/models/widedeep_mt.py`](../src/models/widedeep_mt.py), registrado `widedeep_mt`. Con el skip
+lineal **congelado en el MTM** (garantiza ≥ GBLUP) + un tronco DEEP chico y muy regularizado
+(`[32]`, dropout 0.7), ES honesto (inner temporal 2017→2018 en el fold 2019; holdout por línea en el
+fold 2018) y ensemble de 10 seeds, la red **supera a GBLUP en AMBOS folds**: val 2019 **0.3212**
+(Δ+0.007) y val 2018 **0.3343** (Δ+0.011, significativo). wandb
+[`z5znac1u`](https://wandb.ai/oromagnoli-/maze-genomic-pred/runs/z5znac1u). Config:
+[`exp_widedeep_mt_GY_optimal_goldenrule.yaml`](../configs/exp_widedeep_mt_GY_optimal_goldenrule.yaml).
+
+**Advertencia honesta (clave para el informe):** la ganancia es **100% del skip aditivo**; el tronco
+profundo aporta ~0 (barrido: cuanto más chico el deep, más converge al MTM; con `[16]` la red ES el
+MTM). O sea: **sí existe una red neuronal que le gana a GBLUP, pero solo porque lleva el multi-trait
+GBLUP adentro** — no hay mecanismo puramente profundo/no-lineal que lo supere. Es la confirmación más
+fuerte del techo aditivo de GY en líneas endocriadas (dominancia estructuralmente nula, epistasis que
+no replica): incluso montando deep sobre el mejor aditivo, lo no-lineal es ruido. Cierra el ángulo
+"deep learning vencería al lineal" en óptimo. La mejora real y limpia sigue siendo el **MTM aditivo**
+(Fase 8); `widedeep_mt` es su versión "deep learning" para quien exija una red.
+
+## Fase 10 — Pleiotropía en sequía: el techo genómico (LASSO) aguanta; solo el fenotipo de PH ayuda
+
+**Objetivo:** superar el techo de sequía (bagged-LASSO, 0.4006 en deploy2019) con el mecanismo que
+funcionó en óptimo (pleiotropía GY↔PH, Fase 8). En sequía la correlación within-year GY_dro↔PH_dro es
+fuerte (0.55/0.22/0.51 en 2017/2018/2019; GY↔AD ≈ −0.11, inútil), así que había fundamento. Resultado:
+**la señal GENÓMICA de PH no rompe el techo; solo su FENOTIPO observado lo supera** (otro régimen).
+
+### El flip por fold y por qué el borrowing genómico falla
+LASSO single-trait: **deploy2019 0.4006** (train 2017+2018) / **golden2018 0.1973** (train 2017). En
+2019 la selección sparse domina; en 2018 (1 solo año de train) es débil. **Tres métodos de pleiotropía
+genómica nuevos, todos DAÑAN en deploy2019** (rompen la sparsity → densos → pierden el borde del LASSO):
+
+| método (fair, genotype-only) | deploy2019 | golden2018 |
+|---|---|---|
+| LASSO bagged (techo) | **0.4006** | 0.1973 |
+| MTM (multi-trait GBLUP denso, GY+PH+AD) | 0.2402 (Δ−0.16) | 0.2192 (Δ+0.02) |
+| MT-LASSO bagged (MultiTaskLasso, soporte L2,1 compartido, z-score) | 0.2978 (Δ−0.10, ns≈3500) | 0.2003 (empate) |
+| Adaptive-LASSO (penalidad de GY reponderada por soporte de PH) | 0.2716 (Δ−0.13) | 0.1879 (Δ−0.01) |
+
+Mecanismo: forzar a GY a compartir/priorizar el soporte de PH lo vuelve **denso** (MT-LASSO selecciona
+~3500 marcadores vs ~20–50 del LASSO sparse), y la ventaja del LASSO en 2019 ES la sparsity. En el fold
+débil (2018) el MTM le gana al LASSO por poco (0.219 vs 0.197) — pero 2018 no es donde está el techo, y
+ningún método gana en AMBOS. La señal **genómica** de PH es redundante con la de GY (ambas capadas por
+el mismo parentesco) ⇒ no agrega. Coherente con el techo informacional de
+[[redes-no-superan-lasso-drought]].
+
+### Lo único que supera al LASSO: observar el FENOTIPO de PH (trait-assisted)
+Índice `GY_dro ~ LASSO_GY(genotipo) + PH_dro + AD_dro` con PH/AD **observados en las líneas de val**:
+**deploy2019 0.549** (Δ+0.149, IC[+0.115,+0.170]) y **golden2018 0.287** (Δ+0.090), ambos P(Δ>0)=1.00.
+Grande y robusto en ambos folds. **Pero es sobre todo la correlación fenotípica de PH, no mejor
+genómica:** PH_dro observado **solo** (sin genotipo) ya da **0.5113** en 2019 y 0.2191 en 2018 — por
+ENCIMA del LASSO genómico (0.4006 / 0.1973). El índice suma a PH un empujón genómico (LASSO) y un poco
+de AD (con signo invertido). Es GS asistida por trait secundario (phenomic selection), régimen de
+información distinto (rompe `predict(X)`: necesita PH del val), no comparable al LASSO genotype-only.
+
+### Veredicto
+El **techo GENÓMICO (genotype-only) de GY sequía es el bagged-LASSO** — reconfirmado desde 3 ángulos de
+pleiotropía nuevos (MTM, MT-LASSO, adaptive-LASSO), todos rotos por la misma razón (el borrowing
+densifica y mata la sparsity que gana en 2019). La pleiotropía que SÍ funcionó en óptimo (donde el
+techo es GBLUP denso) **no transfiere a sequía** (donde el techo es LASSO sparse): meter PH densifica.
+Lo único que baja el techo es **observar PH** en las líneas a predecir, y eso refleja la correlación
+fenotípica de PH (0.51) más que genómica. **Para el modelo final 2020:** si el pipeline mide PH_dro de
+las líneas 2020 antes de necesitar GY, el índice trait-assisted (LASSO+PH) da un salto grande
+(0.40→0.55 en el análogo 2019); si no, el bagged-LASSO sigue siendo la portada. Nada nuevo se
+productiviza en `src/models` (norma: solo lo que gana robusto y fair; acá el fair no gana y el
+assisted es otro problema). La mejora amplia del proyecto sigue siendo **LASSO sobre GBLUP (+63 %)**.
+
+## Fase 11 — No-linealidad en traits secundarios (PH/AD): el deep le gana a GBLUP en AD y PH (deploy), pero no transfiere a GY
+
+**Objetivo:** ver si el deep learning (no-linealidad) mejora la predicción de PH (altura) o AD (días a
+floración) en ambos ambientes y —si mejora— si sumar esas predicciones a los modelos lineales rompe los
+techos de GY (optimal ~0.31, drought ~0.40). La hipótesis tenía fundamento distinto al de GY: PH y AD son
+**más heredables y estables entre ambientes** que GY (`r(opt,dro)` = 0.51 PH / 0.62 AD vs **0.14** GY), así
+que si hubiera arquitectura no-lineal explotable debería verse mejor ahí (más SNR); y AD (floración) tiene
+genes de efecto grande (Vgt1/Vgt2, ZmCCT), candidatos a efectos umbral que un modelo aditivo promedia.
+
+### Fase A — ¿la no-linealidad predice mejor PH/AD? (gating)
+Esquema expanding (val 2018 = train 2017; val 2019 = train 2017+2018), Pearson por fold. GBLUP-REML
+(lineal) vs MLP (no-lineal) vs XGBoost (árboles). Números single-seed 575:
+
+| trait | env | GBLUP 2018 / 2019 | MLP 2018 / 2019 | XGB 2018 / 2019 |
+|-------|-----|-------------------|-----------------|-----------------|
+| PH | optimal | 0.443 / 0.071 | 0.408 / 0.109 | 0.367 / 0.066 |
+| PH | drought | 0.340 / −0.048 | 0.357 / −0.096 | 0.303 / −0.013 |
+| AD | optimal | 0.463 / **0.298** | 0.485 / **0.312** | 0.370 / 0.062 |
+| AD | drought | 0.259 / 0.317 | 0.243 / 0.285 | 0.272 / 0.140 |
+
+- **XGBoost pierde en casi todo** (colapsa en AD-opt 2019: 0.06). Los árboles no suman miles de efectos
+  aditivos chicos ⇒ la no-linealidad tipo árbol NO ayuda (mismo diagnóstico que en GY).
+- **PH (con ensemble chico): parece que no ayuda; con ensemble grande, SÍ (ver "Segundo ataque").** Ensemble
+  de 5 seeds en optimal: 2018 0.422 (< GBLUP 0.443), 2019 0.072 (≈ GBLUP 0.071). El "+0.037" de single-seed en
+  2019 era ruido (per-seed −0.018…+0.128). PH→2019 es hiper-inestable a la seed: con **10 seeds** el número se
+  estabiliza en 0.118 y SÍ le gana a GBLUP significativamente en el fold deploy (detalle abajo). En drought,
+  todo ~0/negativo (el drift lo mata) y ahí el deep no ayuda.
+- **AD-drought: el MLP pierde** (2019 0.285 < GBLUP 0.317). No ayuda.
+- **AD-optimal: ÚNICO caso donde la red gana robusto.** **Cada seed** predice 2019 mejor que GBLUP
+  (per-seed 0.31–0.40, todas > 0.298); el ensemble de 5 seeds da **val2019 0.33–0.36 según el set**
+  (config canónico `seeds 575–579` por `train.py`: **0.334, +0.036**; set `575,1,2,3,4`: 0.359, +0.061) y
+  **val2018 ≈ GBLUP** (0.46, empate). No es winner's curse (gana en el año deploy y empata out-of-sample,
+  el patrón *opuesto* al flip-por-fold). La magnitud oscila (~+0.04…+0.06) pero el signo es estable.
+
+**Ablación lineal** (misma receta MLP, `hidden=[]` lineal vs `[128]` vs `[256,128]`; ensemble 5 seeds),
+para separar no-linealidad de "estimador distinto":
+
+| arquitectura | AD-opt 2018 | AD-opt 2019 |
+|--------------|-------------|-------------|
+| `[]` (lineal) | 0.408 | 0.324 |
+| `[128]` (no-lineal) | 0.462 | 0.359 |
+| `[256,128]` | 0.434 | 0.267 |
+
+(tabla y bootstrap sobre el ensemble `575,1,2,3,4`). El +0.061 sobre GBLUP en 2019 se descompone en
+**+0.026 = estimador** (dropout/early-stop-pearson vs ridge; el MLP-lineal ya da 0.324) y **+0.035 =
+no-linealidad** (la capa oculta). Es **shallow**: dos capas overfittean (0.267 < lineal), coherente con
+p≫n. Bootstrap **pareado** cluster-por-línea (n=722 en 2019,
+1418 en 2018): `[128]−GBLUP` **2019 Δ+0.061 IC[+0.035,+0.086] sig**, 2018 Δ−0.001 ns (empate);
+`[128]−lineal` (= efecto puro de la no-linealidad) **2018 Δ+0.053 IC[+0.031,+0.075] sig**, 2019 Δ+0.035
+IC[−0.001,+0.070] (borde). La señal no-lineal es **real y significativa** (no un artefacto del estimador),
+pero acotada a AD-optimal y a una sola capa. Config: `exp_mlp_ens_AD_optimal_goldenrule.yaml`; baselines
+`exp_gblup_2017_2018_to_2019_{PH,AD}_{optimal,drought}.yaml`.
+
+### Fase B — ¿rompe el techo de GY sumando PH/AD no-lineal? (índice trait-assisted genotype-only)
+Índice OLS ajustado **out-of-fold** (pesos en 2018 con modelos entrenados en 2017; aplicado a 2019 con
+modelos en 2017+2018): `GY_pred = w0 + w1·GEBV_GY + w2·PĤ(X) + w3·AD̂(X)`, con PĤ/AD̂ **predichos**
+(genotype-only, fair — NO usa el fenotipo del val, a diferencia del trait-assisted de la Fase 10). Control:
+secundario **lineal** (GBLUP) para aislar si aporta la no-linealidad. Δ vs techo con bootstrap pareado:
+
+**GY optimal** (techo GBLUP = 0.3145 en 2019):
+
+| variante | r(2019) | Δ vs techo | IC95%(Δ) |
+|----------|---------|-----------|----------|
+| base + PĤ(MLP) | 0.334 | +0.019 | [−0.008,+0.045] ns |
+| base + AD̂(MLP) | 0.307 | −0.008 | [−0.015,−0.002] **sig NEG** |
+| base + PĤ(GBLUP) [ctrl lineal] | 0.337 | +0.022 | [−0.013,+0.056] ns |
+
+**GY drought** (techo bagged-LASSO = 0.4006 en 2019):
+
+| variante | r(2019) | Δ vs techo | IC95%(Δ) |
+|----------|---------|-----------|----------|
+| base + PĤ(MLP) | 0.109 | −0.292 | **sig NEG** (colapso) |
+| base + AD̂(MLP) | 0.401 | −0.000 | [−0.023,+0.025] ns (peso≈0) |
+| base + PĤ(GBLUP) [ctrl] | 0.113 | −0.288 | **sig NEG** |
+
+Tres hechos: (1) el secundario **no-lineal (MLP) nunca supera al lineal (GBLUP)** para ayudar a GY —en
+optimal PĤ(MLP) +0.019 ≤ PĤ(GBLUP) +0.022— ⇒ lo poco que aporta PH es **pleiotropía aditiva** (la mejora
+chica del MTM-GBLUP de la Fase 8, no-significativa acá en un solo fold), NO la no-linealidad. (2) **AD̂**
+—el único con no-linealidad real— **daña GY en optimal** (Δ−0.008, IC excluye 0) y es neutro en drought
+(peso≈0): confirma `gcorr(GY,AD)≈0`. (3) En drought meter PH **colapsa** el índice (0.40→0.11): la
+predicción genómica de PH no transfiere 2018→2019 por GxE, así que el peso que le da el ajuste en 2018 le
+inyecta ruido a 2019. **Ningún índice rompe el techo en ningún ambiente.**
+
+### Veredicto
+(1) La no-linealidad **casi no** mejora la predicción de los traits secundarios: el único caso robusto y
+significativo es **AD en optimal** (una red shallow le gana a GBLUP +0.061 en el año deploy, con ~+0.035
+atribuible a la no-linealidad). PH: con ensemble chico parece no mejorar, pero con **10 seeds le gana a GBLUP
+en el fold deploy** (ver "Segundo ataque"); AD-drought no mejora. (2) Esa no-linealidad
+**NO rompe el techo de GY**: el trait donde existe (AD, floración) es genómicamente ~ortogonal a GY
+—agregarlo daña u es neutro—, y el trait relevante para GY (PH) no gana nada por no-linealidad (su proxy
+lineal empata al no-lineal, y equivale a la mejora aditiva ya conocida del MTM-GBLUP). Los techos aguantan
+(**GY optimal ~0.31, GY drought ~0.40**). Coherente con la raíz biológica del techo aditivo de GY (líneas
+endocriadas homocigotas ⇒ dominancia = 0): la no-linealidad de AD es real pero, por su ortogonalidad
+genética con GY, **no productivizable** para rendimiento. Reproducible con el harness de scratchpad de la
+sesión (`explore_nl.py`, `phase_b.py`, `verify_ad.py`) y los configs citados; corridas en modo offline
+(sin sync a wandb).
+
+### Segundo ataque — mejorar PH con deep learning para asistir a GY
+GBLUP es pésimo prediciendo PH hacia 2019 (0.071) y PH es el trait más correlacionado con GY (0.64 opt), así
+que la hipótesis era: si el deep logra un PĤ mucho mejor, el índice trait-assisted podría mover el techo de
+GY. Se atacó PH con **varias alternativas**.
+
+**Diagnóstico — la causa es DOMAIN/CONCEPT-SHIFT, no linealidad.** Predictibilidad de PH_opt val2019 según el
+set de train (GBLUP, determinista): train[2017]=**0.184**, train[2018]=0.031, train[2017+2018]=**0.071**.
+Entrenar con 2017 solo predice 2019 mucho mejor que el pool: **la cohorte 2018 anti-transfiere**. Y 2017 no es
+un año flojo (train[2017]→val2018 = 0.443). El covariate-shift weighting (ponderar el train por afinidad
+genómica a 2019) **empeora** (0.118→0.050): el density-ratio pesa MÁS a 2018 (0.67) porque genómicamente 2019
+se parece a su año adyacente, pero 2018 es el que anti-transfiere. Es decir, el shift está en **P(Y|X)**
+(concept drift), no en P(X) ⇒ ningún criterio basado solo en X (covshift, selección de año por SNPs) lo
+arregla. Coherente con [[elegir-anio-durante-entrenamiento]].
+
+**PH_opt→2019 es hiper-inestable a la seed** (per-seed −0.02…+0.20). Un sweep de 3 seeds da números que
+oscilan 0.065–0.197 entre configs casi idénticos: puro azar. Solo el ensemble de 10 seeds + bootstrap
+pareado cluster-línea es confiable.
+
+**Resultado (ensemble 10 seeds, val2019 = análogo deploy; GBLUP 2018=0.443, 2019=0.071):**
+
+| método deep | val2018 (Δ vs GBLUP) | val2019 (Δ vs GBLUP) |
+|-------------|----------------------|----------------------|
+| MLP pearson_mse | 0.407 (−0.037 sig) | **0.118 (+0.046 SIG, IC[+0.018,+0.073])** |
+| MLP mse | 0.414 (−0.029 sig) | 0.105 (+0.034 sig) |
+| MLP multi-ambiente PH_opt+PH_dro | 0.410 (−0.034 sig) | 0.114 (+0.043 sig) |
+
+**Sí se le gana a GBLUP en PH, en el fold deploy.** Las 3 familias (MLP single, multi-ambiente, multitask)
+convergen: **+0.043…+0.046 significativo en val2019** (train 2017+2018 → predecir el último año = análogo de
+predecir 2020). El MLP es más robusto que el ridge de GBLUP a la transferencia negativa de 2018, por eso
+brilla justo en el fold con más datos y shift. Cae en val2018 (train solo-2017, régimen no-deploy). Config
+`exp_mlp_ens_PH_optimal_deploy.yaml`. Otras alternativas: XGBoost, blend GBLUP+MLP, [256,128] — ninguna
+robustamente mejor. En PH_drought el deep NO ayuda (todo ~0 hacia 2019: el drift lo mata).
+
+**Aporte a GY: un empujón MARGINAL en optimal, nada en drought — no es un quiebre robusto.** Metiendo el PĤ
+deep (pearson_mse, genotype-only) en el índice OOF de GY (fit 2018 → aplica 2019): GY-opt = 0.3426, **Δ+0.028
+vs GBLUP, IC[+0.004,+0.051] (apenas sig)**; el control lineal PĤ-GBLUP da +0.022 (ns), o sea el deep supera
+al lineal por apenas +0.006 (ese es el aporte de la no-linealidad; el resto es pleiotropía aditiva). GY-drought
+COLAPSA (0.40→0.10, sig neg) por GxE. Es un solo fold (2019), apenas significativo y seed-dependiente: con 3
+sets distintos de seeds del PĤ el Δ va de **+0.022 a +0.028** (uno ns), siguiendo la calidad del PĤ ⇒ NO es un
+quiebre robusto del techo, comparado con el MTM-GBLUP (+0.005/+0.010 en AMBOS folds, determinista). El eslabón "PĤ mejor → GY mejor" queda casi cortado porque PĤ→2019 sigue siendo débil (0.118):
+su correlación con GY está acotada
+por 0.118·gcorr(PH,GY) y GEBV_GY ya captura el aditivo compartido.
+
+### Veredicto del segundo ataque
+Se le **gana a GBLUP en PH con deep learning en el año deploy** (+0.046 sig, robusto a 3 métodos y 10 seeds),
+por mayor robustez de la red al concept-drift entre cohortes — un resultado positivo y publicable. Pero esa
+mejora **no se transfiere a GY**: PĤ es todavía demasiado débil (0.118) para mover el rinde más allá de la
+pleiotropía aditiva ya conocida (MTM), y en sequía la GxE lo rompe. Los techos de GY siguen intactos (opt
+~0.31, dro ~0.40). Config `exp_mlp_ens_PH_optimal_deploy.yaml`; reproducible con `ph_campaign.py`,
+`ph_verify.py`, `covshift.py`, `ph_final.py` (scratchpad); offline (sin sync a wandb).
+
+### Tercer ataque — ¿mejora AMPLIA de GY combinando deep PH/AD + lineal? El límite y la vía phenomic
+**Consigna:** mejorar *ampliamente* el techo de GY combinando predicciones deep de PH/AD con los ganadores
+lineales, probando modelos distintos para predecir PH/AD lo mejor posible.
+
+**Argumento de imposibilidad (genotype-only).** El aporte de PĤ al índice de GY está acotado por
+`r(PĤ, PH_true) · gcorr(PH, GY)`. Y `r(PĤ, PH_true)` hacia 2019 tiene **techo ~0.12–0.18** (concept-drift:
+la cohorte 2018 anti-transfiere; ni el oráculo train-2017-only = 0.184 se supera sin ver 2019). Con gcorr≈0.6
+⇒ el aporte de PH a GY está capado en ~0.1, y GEBV_GY ya tiene el aditivo compartido. AD, aunque se predice
+bien (0.36), es **genéticamente ⊥ a GY** (gcorr≈0). Y GY es aditivo (dominancia = 0) ⇒ sin no-linealidad de
+GY para explotar. A priori: **no hay mejora amplia genotype-only.**
+
+**Modelos deep NUEVOS para maximizar PĤ — ninguno rompe ~0.13 en 2019:** AE-embedding no-lineal (dim128, BCE
+train-only) + GBLUP (2019 = −0.006, la compresión pierde la señal), AE + MLP (2019 = 0.143, single-seed,
+dentro del ruido), multitask PH+GY+AD 15 seeds (2019 = 0.125), y los previos (MLP pearson_mse 0.118,
+multi-ambiente 0.114, covshift, XGBoost, [256,128]). Todos convergen a **~0.12–0.13**: es un techo
+INFORMACIONAL (concept-drift), no de capacidad del modelo.
+
+**Combinación comprehensiva (índice OOF, fit 2018 → aplica 2019), genotype-only vs PHENOMIC (usa el
+fenotipo OBSERVADO del val — otro régimen de información, se mide antes de la cosecha de GY):**
+
+| régimen | GY optimal (techo 0.3145) | GY drought (techo 0.4006) |
+|---------|---------------------------|---------------------------|
+| genotype-only: +PĤ+AD̂ deep | 0.3418 (+0.027, apenas sig, no robusto; AD̂ no aporta) | ~0.10 (COLAPSA por GxE) |
+| **PHENOMIC: +PH_obs** | **0.4265 (+0.112 SIG)** | **0.5771 (+0.177 SIG)** |
+| PHENOMIC: +PH_obs+AD_obs | 0.4304 (+0.116 SIG) | 0.5663 (+0.166 SIG) |
+
+(PH observado **solo**, sin genotipo, ya correlaciona con GY_2019: 0.31 óptimo / **0.51 sequía**.)
+
+### Veredicto del tercer ataque
+**La mejora AMPLIA existe, pero es PHENOMIC (medir PH), no genotype-only (predecir PH).** Combinar el ganador
+lineal (GEBV_GY) con el fenotipo **observado** de PH da GY-opt **0.31→0.43 (+0.11)** y GY-dro **0.40→0.58
+(+0.18)** — grande y significativo en ambos. El deep NO puede sustituir la medición: el gap es 100% calidad
+de predicción de PH, y PH→2019 está capado en ~0.12–0.18 por concept-drift (probado con AE, multitask,
+multi-ambiente, covshift, XGBoost, ensembles grandes). El aporte a GY escala con `r(PĤ,PH)`: PĤ (0.12) da
++0.03 (marginal); PH_obs (1.0) da +0.11–0.18 (amplio). **Recomendación operativa:** para mejorar ampliamente
+el modelo final de 2020, el pipeline de breeding debe **MEDIR PH (y PH_dro) de las líneas 2020** antes de
+necesitar GY, y usar el índice trait-assisted `GY ~ GEBV_GY + PH_obs`. El deep aporta un PĤ algo mejor que
+GBLUP en el deploy (+0.046 en PH), útil si NO se mide PH, pero insuficiente para el salto amplio. Reproducible:
+`combine.py`, `phenomic.py`, `new_models.py` (scratchpad). Ver [[deep-mejora-PH-deploy-no-GY]] y
+[[mejora-amplia-GY-es-phenomic]].
