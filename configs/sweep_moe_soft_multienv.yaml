@@ -1,0 +1,103 @@
+# Sweep BAYESIANO del SOFT MoE MULTI-AMBIENTE (GY optimal+drought), optimizando pearson_r_GY
+# (= cabeza drought, cover_env del config base). GEMELO SOFT de sweep_moe_multienv.yaml (hard):
+# MISMO metodo (bayes), MISMA metrica de portada, MISMO fold de seleccion (train 2017 -> val 2018),
+# MISMO run_cap y MISMOS rangos del backbone compartido -> el UNICO eje que cambia entre los dos
+# sweeps es el MECANISMO de mezcla (gate blando K expertos vs gating PCA+GMM top-1). Asi soft-vs-hard
+# es un A/B limpio en el ambiente donde el MoE le gano a GBLUP (drought).
+#
+# QUE BARRE: el bloque soft-MoE (K, temperatura, load-balancing, gate) + la arquitectura/
+# regularizacion/optimizacion del backbone compartido, TODO bajo model.params.inner.* (el inner del
+# ensemble ES el soft MoE). NO barre loss_weights: quedan GY_optimal=GY_drought=1.0 en el config
+# base, IGUAL que el hard multienv (2x al target no ayudo en el multienv global).
+#
+# COHERENCIA de rangos: los rangos del backbone (hidden_dims, activation, batchnorm, dropout,
+# input_dropout, weight_decay, lr, batch_size, max_epochs) son IDENTICOS a sweep_moe_multienv (hard)
+# y a sweep_moe_soft_ensemble_multitask (soft trait) -> soft-vs-hard y multienv-vs-trait comparables.
+# Los rangos del bloque soft-MoE (n_experts, gate_tau, lb_coef, gate_hidden_dim) son IDENTICOS a
+# sweep_moe_soft_ensemble_multitask.
+#
+# COSTO: cada trial entrena n_models (=5) redes soft-MoE (backbone + K cabezas + gate), ~5x mas
+# barato que el hard multienv que entrena (k+1)*n_models redes por trial. run_cap=120 iguala la
+# PRESION DE SELECCION del hard (mismo nro de configs exploradas => mismo riesgo de winner's curse),
+# y aun asi el wall-clock queda por debajo del hard. Si es muy caro: bajar n_models a 3 en el base.
+# set_nested soporta las claves anidadas (model.params.inner.n_experts, ...).
+#
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado en el config base, sin tocar 2019). El reporte
+# final (reentrenar 2017+2018 -> 2019 vs GBLUP-drought/optimal y el hard multienv) es un paso
+# posterior con los HP ganadores; 2020 sellado. NO tocar cv.* ni data.* (reglas 2 y 3).
+#
+# Uso:
+#   wandb login
+#   wandb sweep configs/sweep_moe_soft_multienv.yaml     # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en screen
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_moe_soft_multienv_pearsonGY_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 120
+
+metric:
+  name: pearson_r_GY          # Pearson de GY del ENSEMBLE en la cabeza drought (cover_env)
+  goal: maximize
+
+parameters:
+  # --- soft mixture of experts: lo especifico de este camino ---
+  model.params.inner.n_experts:
+    values: [2, 4, 8]              # K expertos que el gate mezcla
+  model.params.inner.gate_tau:
+    distribution: uniform         # temperatura del softmax del gate (>1 = mezcla mas blanda)
+    min: 0.5
+    max: 3.0
+  model.params.inner.lb_coef:
+    distribution: log_uniform_values  # coef de la load-balancing loss (Switch)
+    min: 0.0001
+    max: 0.1
+  model.params.inner.gate_hidden_dim:
+    values: [0, 32]               # 0 => gate lineal Linear(h, K); 32 => una capa oculta
+  # --- backbone compartido: arquitectura del tronco (mismos rangos que el hard multienv) ---
+  model.params.inner.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [128, 64]
+      - [256, 128]
+  model.params.inner.activation:
+    values: [relu, gelu, leaky_relu]
+  model.params.inner.batchnorm:
+    values: [true, false]
+  # --- backbone: regularizacion (clave en p >> n) ---
+  model.params.inner.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.inner.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.inner.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- backbone: optimizacion ---
+  model.params.inner.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.inner.batch_size:
+    values: [0, 32, 64]           # 0 = full-batch
+  model.params.inner.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 300
+  # NOTA: loss_weights (GY_optimal/GY_drought) NO se barren -> quedan 1.0/1.0 en el config base,
+  # igual que el hard multienv (sweep_moe_multienv). Es un eje deliberadamente fijo para la coherencia.
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_moe_soft_multienv_GY_2017_to_2018.yaml

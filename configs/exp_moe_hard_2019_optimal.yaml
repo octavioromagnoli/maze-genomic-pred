@@ -1,0 +1,78 @@
+# CONFIRMACION 2019 (OPTIMAL) del MoE HARD (moe_multitask, gating PCA+GMM top-1) en setup
+# TRAIT-MULTITASK GY+PH+AD, con los HP GANADORES del hard MoE (sweep multienv 87qyjrcr, trial
+# u1kgstvr). OJO: esos HP se seleccionaron en el setup MULTIENV (GY optimal+drought) sobre drought;
+# aca se transplantan al trait-multitask para un 3-way JUSTO (soft / hard / GBLUP en el MISMO setup
+# y fold). Reentrena 2017+2018 -> val 2019. 2020 sellado. NO tocar data.* mas alla de env.
+#
+#   python scripts/train.py --config configs/exp_moe_hard_2019_optimal.yaml
+
+experiment:
+  name: moe_hard_2019_optimal
+  description: >
+    MoE hard (gating PCA+GMM, ruteo top-1) trait-multitask GY+PH+AD, HP ganadores del hard MoE
+    (k=4, pca=100, cov=full, min_cluster_size=250, inner [128] leaky_relu, n_models=5). Reentrena
+    2017+2018 -> val 2019 (optimal). 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_multitask
+  params:
+    gating:                     # HP GANADORES (u1kgstvr) + defaults no barridos
+      pca_n_components: 100
+      standardize: true
+      whiten: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:                     # HP GANADORES (u1kgstvr) del expert
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights: {GY: 1.0, PH: 0.5, AD: 0.5}   # el hard no tuneo pesos de trait (era multienv)
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, hard, multitask, gmm, confirm, train20172018, val2019, GY, PH, AD, optimal, pearson-loss]

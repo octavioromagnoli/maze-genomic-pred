@@ -1,0 +1,89 @@
+# SOFT MIXTURE OF EXPERTS MULTI-AMBIENTE (GY optimal+drought), PORTADA OPTIMAL — CONFIG BASE.
+#
+# GEMELO del exp_moe_soft_multienv_GY (soft, portada drought): MISMO modelo, MISMOS datos, MISMO
+# fold. LO UNICO que cambia es `cover_env: optimal` => el sweep selecciona HP mirando la cabeza
+# OPTIMAL (pearson_r_GY = pearson de GY_optimal en val 2018). Cierra la tabla simetrica del informe:
+# {soft,hard} x {optimal,drought}, cada celda seleccionada en su propio ambiente.
+#
+# CAVEAT (bitacora): en optimal GBLUP esta casi en el techo (~0.31 vs mejor NN 0.268). Este sweep es
+# POR COMPLETITUD; NO se espera que le gane a GBLUP-optimal. El premio real esta en drought.
+#
+# ensemble_multitask(moe_soft_multitask): backbone compartido + K cabezas de experto multi-ambiente
+# mezcladas por un gate blando (softmax/tau) con anti-colapso (temperatura + load-balancing Switch).
+# Ensemble de seeds por robustez al winner's curse. loss_weights por cabeza en 1.0/1.0 y NO se
+# barren. SELECCION HONESTA: train 2017 -> val 2018 (clavado aca), sin tocar 2019 (regla 3). Lo
+# barre configs/sweep_moe_soft_multienv_optimal.yaml.
+
+experiment:
+  name: moe_soft_multienv_GY_optimal_2017_to_2018
+  description: >
+    Soft mixture of experts MULTI-AMBIENTE para GY (cabezas optimal+drought), seleccionando por la
+    cabeza OPTIMAL (cover_env: optimal). Gemelo del soft multienv drought para la tabla simetrica del
+    informe. Ensemble de seeds. Train 2017 -> val 2018 para la SELECCION. 2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true            # un trait, varios ambientes como cabezas (NO usar data.targets)
+  target: GY                # trait unico
+  envs: [optimal, drought]  # una cabeza por ambiente (orden = columnas de Y)
+  cover_env: optimal        # PORTADA = optimal (pearson_r_GY del sweep = cabeza optimal)
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# El backbone, los expertos y el gate hacen su preprocesamiento train-only DENTRO de fit (regla 1).
+# El ensemble promedia predicciones z-scoreadas por columna con stats de TRAIN (sin leakage).
+
+model:
+  name: ensemble_multitask
+  params:
+    inner_name: moe_soft_multitask   # el inner del ensemble ES el soft MoE (no el MLP)
+    n_models: 5               # seeds por trial (5 = balance robustez/costo; 3 si el sweep es caro)
+    seed_step: 1000           # seeds = inner.random_state + i*seed_step
+    inner:                    # HP del soft MoE; ESTO es lo que barre el sweep (model.params.inner.*)
+      # --- tronco compartido (mismos rangos que el hard multienv y el soft drought) ---
+      hidden_dims: [128]      # el embedding compartido h es hidden_dims[-1]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 100
+      loss: pearson           # "pearson" | "pearson_mse"
+      loss_weights:           # claves = trait_ambiente; pesos iguales por cabeza (NO se barren)
+        GY_optimal: 1.0
+        GY_drought: 1.0
+      patience: null          # sin early stopping: con un solo ano no hay inner-split
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575        # seed BASE del ensemble (las demas: +1000, +2000, ...)
+      device: auto
+      # --- soft mixture of experts (mismo bloque/rangos que el soft drought) ---
+      n_experts: 4             # K expertos que el gate mezcla (probar 2, 4, 8 en el sweep)
+      gate_tau: 1.0            # temperatura del softmax del gate (>1 = mezcla mas blanda)
+      lb_coef: 0.01            # coef de la load-balancing loss (Switch: K*sum_k f_k*P_k)
+      gate_hidden_dim: null    # null => gate lineal Linear(h, K); int => 1 capa oculta en el gate
+      expert_hidden_dim: null  # null => cada experto es Linear(h, n_cabezas); int => 1 capa oculta
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, soft, multienv, ensemble, nn, pytorch, gate, load-balance, sweep, select, train2017, val2018, GY, optimal, drought, cover-optimal, pearson-loss]

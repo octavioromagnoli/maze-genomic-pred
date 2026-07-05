@@ -1,0 +1,82 @@
+# Sweep BAYESIANO del SOFT MoE MULTI-AMBIENTE (GY optimal+drought), PORTADA OPTIMAL. Gemelo de
+# sweep_moe_soft_multienv.yaml: MISMO metodo, MISMOS rangos, MISMO fold de seleccion; LO UNICO que
+# cambia es que el config base tiene cover_env: optimal => pearson_r_GY = cabeza OPTIMAL. Junto con
+# sweep_moe_multienv_optimal cierra la tabla simetrica {soft,hard} x {optimal,drought} del informe.
+#
+# CAVEAT: en optimal GBLUP esta casi en el techo (~0.31 vs mejor NN 0.268). Es POR COMPLETITUD; el
+# premio real esta en drought. NO barre loss_weights (quedan 1.0/1.0 en el base). Cada trial entrena
+# n_models (=5) redes soft-MoE; run_cap=120 iguala la presion de seleccion del hard.
+#
+# Uso:
+#   wandb sweep configs/sweep_moe_soft_multienv_optimal.yaml     # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en screen
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_moe_soft_multienv_pearsonGY_optimal_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 120
+
+metric:
+  name: pearson_r_GY          # cabeza OPTIMAL (cover_env: optimal del config base)
+  goal: maximize
+
+parameters:
+  # --- soft mixture of experts: lo especifico de este camino ---
+  model.params.inner.n_experts:
+    values: [2, 4, 8]              # K expertos que el gate mezcla
+  model.params.inner.gate_tau:
+    distribution: uniform         # temperatura del softmax del gate (>1 = mezcla mas blanda)
+    min: 0.5
+    max: 3.0
+  model.params.inner.lb_coef:
+    distribution: log_uniform_values  # coef de la load-balancing loss (Switch)
+    min: 0.0001
+    max: 0.1
+  model.params.inner.gate_hidden_dim:
+    values: [0, 32]               # 0 => gate lineal Linear(h, K); 32 => una capa oculta
+  # --- backbone compartido: arquitectura del tronco (mismos rangos que el hard multienv) ---
+  model.params.inner.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [128, 64]
+      - [256, 128]
+  model.params.inner.activation:
+    values: [relu, gelu, leaky_relu]
+  model.params.inner.batchnorm:
+    values: [true, false]
+  # --- backbone: regularizacion (clave en p >> n) ---
+  model.params.inner.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.inner.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.inner.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- backbone: optimizacion ---
+  model.params.inner.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.inner.batch_size:
+    values: [0, 32, 64]           # 0 = full-batch
+  model.params.inner.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 300
+  # NOTA: loss_weights (GY_optimal/GY_drought) NO se barren -> quedan 1.0/1.0 en el config base.
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_moe_soft_multienv_GY_optimal_2017_to_2018.yaml
