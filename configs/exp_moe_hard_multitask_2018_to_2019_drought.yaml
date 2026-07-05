@@ -1,0 +1,78 @@
+# REPORTE 2019 del MoE HARD TRAIT-MULTITASK (GY+PH+AD) en drought.
+#
+# Usa los HP ganadores del sweep hard MoE multienv drought:
+# sweep 87qyjrcr, trial u1kgstvr, trasplantados al setup trait-multitask.
+# Train 2018 -> val 2019.
+
+experiment:
+  name: moe_hard_multitask_2018_to_2019_drought
+  description: >
+    MoE hard trait-multitask GY+PH+AD en drought con HP ganadores del sweep
+    87qyjrcr/u1kgstvr. Entrena con 2018 y valida en 2019.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_multitask
+  params:
+    gating:
+      pca_n_components: 100
+      standardize: true
+      whiten: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY: 1.0
+          PH: 0.5
+          AD: 0.5
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, hard, multitask, train2018, val2019, GY, PH, AD, drought, pearson-loss]

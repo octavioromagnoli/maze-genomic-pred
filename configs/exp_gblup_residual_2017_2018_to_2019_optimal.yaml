@@ -1,0 +1,67 @@
+# CONFIRM 2019 (OPTIMAL) — STACKING ADITIVO GBLUP + RED sobre el residual (GY - y_gblup).
+# Reentrena 2017+2018 -> val 2019 en OPTIMAL. Compara contra el baseline GBLUP-optimal
+# (exp_gblup_2017_2018_to_2019.yaml). CAVEAT: en optimal GBLUP esta casi en el techo (~0.31);
+# el residual de un shrinker fuerte suele ser ruido -> no se espera mejora grande. 2020 SELLADO.
+#
+# NOTA: HP de la red = DEFAULT del base (no barridos). loss=mse (suma aditiva, escala calibrada).
+#
+#   python scripts/train.py --config configs/exp_gblup_residual_2017_2018_to_2019_optimal.yaml
+
+experiment:
+  name: gblup_residual_2017_2018_to_2019_optimal
+  description: >
+    Stacking aditivo GBLUP + red sobre el residual (GY - y_gblup), GY en OPTIMAL. Reentrena
+    2017+2018 -> val 2019. GBLUP REML como base lineal; la red modela el residual (loss mse) y
+    la prediccion suma ambas. Confirm honesto vs GBLUP-optimal (techo alto). 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019            # ano a predecir (fold honesto de reporte)
+  train_years: [2017, 2018] # reentreno sobre todo el dev previo a 2019
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+model:
+  name: gblup_residual
+  params:
+    gblup:
+      lambda_method: reml       # base lineal determinista
+    mlp:
+      hidden_dims: [128]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 100
+      loss: mse                 # residual en escala calibrada (NUNCA pearson pura)
+      mse_weight: 0.3
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [gblup-residual, stacking, nn, gblup, confirm, train20172018, val2019, GY, optimal]

@@ -1,0 +1,69 @@
+# DEEP KERNEL / ATENCION SOBRE EL TRAIN — CONFIRM 2019 (DROUGHT).
+#
+# El kernel relacional APRENDIDO (supervisado): un encoder phi(x) mapea SNPs a un embedding, la
+# similitud coseno phi(x_q).phi(x_j) (temperatura tau) define un score y un softmax sobre el train
+# da los pesos de atencion; la prediccion es la mezcla Sum_j a_qj y_j. Generaliza GBLUP (que usa
+# w=G(G+lambdaI)^-1 fijo y lineal). Entrenamiento leave-one-out POR LINEA. Reentrena 2017+2018 ->
+# val 2019 en SEQUIA (la cancha con headroom). Compara contra GBLUP-drought (0.241), gblup_residual
+# (0.281) y AE->GBLUP (0.257). 2020 SELLADO. HP = defaults razonables (no barridos aun).
+#
+#   python scripts/train.py --config configs/exp_dk_attn_2017_2018_to_2019_drought.yaml
+
+experiment:
+  name: dk_attn_2017_2018_to_2019_drought
+  description: >
+    Deep kernel / atencion sobre el train para GY en SEQUIA: encoder phi(x) + atencion coseno sobre
+    los fenotipos del train (kernel aprendido supervisado, generaliza GBLUP). Leave-one-out por
+    linea en el entrenamiento. Reentrena 2017+2018 -> val 2019. Confirm honesto vs GBLUP-drought.
+    2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+# Preprocesamiento train-only DENTRO de fit (regla 1: z-score de features y target con stats de
+# train). No usa el bloque preprocess:. Persistencia torch (state_dict + keys del train).
+
+model:
+  name: deep_kernel_attn
+  params:
+    embed_dim: 64             # dim del embedding phi(x)
+    hidden_dims: [512]        # encoder antes del embedding
+    dropout: 0.3
+    input_dropout: 0.3        # regularizacion fuerte en la entrada (p>>n)
+    activation: relu
+    batchnorm: false
+    cosine: true              # similitud coseno (embeddings normalizados)
+    tau: 0.1                  # temperatura del softmax de atencion
+    lr: 0.001
+    weight_decay: 0.0001
+    max_epochs: 300           # full-batch (la atencion necesita todo el train como keys)
+    standardize_inputs: true
+    standardize_target: true
+    random_state: 575
+    device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [deep-kernel, attention, relational, confirm, train20172018, val2019, GY, drought]

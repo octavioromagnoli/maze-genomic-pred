@@ -12,6 +12,7 @@ import numpy as np
 from src.data.preprocess import build_preprocessor
 from src.models.base import BaseModel
 from src.models.cbeta_vae import CBetaVAERegressor
+from src.models.deep_kernel_attn import DeepKernelAttentionRegressor
 from src.models.dummy import MeanPredictor
 from src.models.ensemble_multitask import EnsembleMultitaskRegressor
 from src.models.gblup import GBLUP
@@ -33,6 +34,7 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "moe_multitask": MixtureOfExpertsMultitaskRegressor,
     "moe_soft_multitask": SoftMoEMultitaskRegressor,
     "cbeta_vae": CBetaVAERegressor,
+    "deep_kernel_attn": DeepKernelAttentionRegressor,
 }
 
 class PreprocessedModel(BaseModel):
