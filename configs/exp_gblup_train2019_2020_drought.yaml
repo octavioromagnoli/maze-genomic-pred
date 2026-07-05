@@ -1,0 +1,46 @@
+# DIAGNOSTICO (NO es el cierre): entrena SOLO en 2019 y predice 2020.
+# gblup, GY drought. Testea adyacencia (2019->2020) vs pool (2017-2019->2020). HP default.
+experiment:
+  name: gblup_train2019_2020_drought
+  description: 'DIAGNOSTICO (no es cierre): gblup entrenado SOLO en 2019 -> predecir
+    2020, GY drought. Testea si el ano adyacente predice mejor que poolear 2017-2019.
+    HP default.'
+seed: 575
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+cv:
+  scheme: fixed_temporal
+  val_year: 2020
+  train_years:
+  - 2019
+  holdout_test_year: null
+  enforce_disjoint_lines: true
+model:
+  name: gblup
+  params:
+    lambda_method: reml
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+artifacts:
+  save_model: false
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags:
+  - gblup
+  - reml
+  - dev
+  - train2017-2018
+  - val2019
+  - GY
+  - drought
+  - final2020
+  - holdout
+  - train2019
+  - diag2020

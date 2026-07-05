@@ -1,0 +1,74 @@
+# DEEP KERNEL TWO-STAGE (AE -> GBLUP) — CONFIRM 2019 (DROUGHT).
+#
+# Kernel NO-LINEAL two-stage: un autoencoder (BCE, regla 4) aprende un embedding phi(x) train-only
+# y GBLUP corre sobre ese embedding -> el parentesco pasa a ser G = phi(X) phi(X)' / d (no-lineal),
+# en vez de G = ZZ'/p (aditivo lineal). Analogo del pca_gblup pero con compresor NO-LINEAL.
+# Reentrena 2017+2018 -> val 2019 en SEQUIA. Compara contra GBLUP-drought (0.241) y gblup_residual.
+#
+# CAVEAT: el AE se entrena NO supervisado (reconstruccion), asi que el kernel puede no alinearse
+# con el fenotipo -> puede no superar al GBLUP lineal. Es el eje "kernel aprendido" en su version
+# barata; el supervisado end-to-end es el otro experimento. 2020 SELLADO. HP del AE = defaults
+# razonables (no barridos aun).
+#
+#   python scripts/train.py --config configs/exp_dk_ae_gblup_2017_2018_to_2019_drought.yaml
+
+experiment:
+  name: dk_ae_gblup_2017_2018_to_2019_drought
+  description: >
+    Deep kernel two-stage: autoencoder de SNPs (BCE) train-only produce un embedding phi(x) y GBLUP
+    (REML) corre sobre phi -> kernel genomico no-lineal G = phi phi'/d. GY en SEQUIA, reentrena
+    2017+2018 -> val 2019. Confirm honesto vs GBLUP-drought y gblup_residual. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+# El AE se ajusta SOLO con el train del fold (regla 1); early stopping por BCE sobre un held-out
+# POR LINEA del train (regla 2, val_frac). GBLUP re-estandariza el embedding internamente.
+preprocess:
+  autoencoder:
+    latent_dim: 128           # dim del embedding phi(x) que consume GBLUP
+    encoder_hidden: [1024, 256]
+    activation: relu
+    dropout: 0.0
+    batchnorm: false
+    tie_weights: false
+    denoising_p: 0.1          # denoising AE: regulariza el embedding (p>>n)
+    lr: 0.001
+    weight_decay: 0.0
+    batch_size: 128
+    max_epochs: 300
+    patience: 30              # early stopping por val BCE
+    val_frac: 0.1             # held-out POR LINEA para early stopping (regla 2)
+    seed: 575
+    device: null              # null => cuda si hay, si no cpu (el AE reducer NO acepta "auto")
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml       # GBLUP sobre el embedding (kernel no-lineal)
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [deep-kernel, autoencoder, gblup, two-stage, confirm, train20172018, val2019, GY, drought]

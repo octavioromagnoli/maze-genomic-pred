@@ -1,0 +1,94 @@
+# ENSEMBLE de seeds del SOFT MoE MULTITASK (GY+PH+AD, optimal) — CONFIG BASE del sweep ROBUSTO.
+#
+# POR QUE: el pearson_r_GY de UNA sola seed en val 2018 es ruidoso -> un sweep que selecciona por
+# ese numero OVERFITTEA 2018 (winner's curse: el mejor single-seed es el que saco una seed con
+# suerte, no el que generaliza). Aca cada trial entrena un ENSEMBLE de `n_models` seeds del soft
+# MoE y promedia sus predicciones: el `pearson_r_GY` que optimiza el sweep es el DEL ENSEMBLE
+# (estable), y el modelo final desplegado ES ese mismo ensemble. Asi la ventaja que elige el sweep
+# se sostiene a seeds.
+#
+# El modelo `ensemble_multitask` (inner_name: moe_soft_multitask) envuelve el soft MoE: entrena
+# n_models redes con seeds inner.random_state + i*seed_step y promedia las predicciones
+# estandarizadas por columna (la loss pearson deja la escala arbitraria). Los HP del soft MoE
+# (backbone + bloque soft-MoE + pesos aux) van en model.params.inner.* -> es lo que barre el sweep.
+#
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado aca), sin tocar 2019 (regla 3). El reporte
+# (reentrenar 2017+2018 -> 2019 vs GBLUP/MT global/single-seed) y el TEST FINAL (2020) se hacen
+# despues con los HP ganadores; 2020 sellado. Lo barre configs/sweep_moe_soft_ensemble_multitask.yaml.
+# NO tocar cv.* ni data.* (reglas 2 y 3).
+
+experiment:
+  name: moe_soft_ensemble_multitask_2017_to_2018
+  description: >
+    Ensemble de seeds (n_models) del soft mixture of experts multitask para GY+PH+AD en ambiente
+    optimo. Cada trial del sweep evalua el ENSEMBLE (no una seed) -> seleccion de HP robusta al
+    winner's curse; el modelo final desplegado ES el ensemble. Backbone compartido + K cabezas de
+    experto multitarea mezcladas por un gate blando (softmax/tau) con anti-colapso (temperatura +
+    load-balancing Switch). Train 2017 -> val 2018 para la SELECCION. Portada = GY. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]     # multitask: lista de traits (orden = columnas de Y)
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# El soft MoE (backbone + expertos + gate) hace su preprocesamiento train-only DENTRO de fit
+# (regla 1: z-score de features y del target solo con el train del fold). No se usa `preprocess:`.
+# El ensemble promedia predicciones z-scoreadas por columna con stats de TRAIN (sin leakage).
+
+model:
+  name: ensemble_multitask
+  params:
+    inner_name: moe_soft_multitask   # el inner del ensemble ES el soft MoE (no el MLP)
+    n_models: 5               # seeds por trial (5 = balance robustez/costo; 3 si el sweep es caro)
+    seed_step: 1000           # seeds = inner.random_state + i*seed_step
+    inner:                    # HP del soft MoE; ESTO es lo que barre el sweep (model.params.inner.*)
+      # --- tronco compartido (mismo bloque que la MTL) ---
+      hidden_dims: [128]      # el embedding compartido h es hidden_dims[-1]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 100
+      loss: pearson           # "pearson" | "pearson_mse"
+      loss_weights:           # L = sum_i w_i * (1 - r_i) por trait; mas peso a GY (portada)
+        GY: 1.0
+        PH: 0.5
+        AD: 0.5
+      patience: null          # sin early stopping: con un solo ano no hay inner-split
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575        # seed BASE del ensemble (las demas: +1000, +2000, ...)
+      device: auto
+      # --- soft mixture of experts ---
+      n_experts: 4             # K expertos que el gate mezcla (probar 2, 4, 8 en el sweep)
+      gate_tau: 1.0            # temperatura del softmax del gate (>1 = mezcla mas blanda)
+      lb_coef: 0.01            # coef de la load-balancing loss (Switch: K*sum_k f_k*P_k)
+      gate_hidden_dim: null    # null => gate lineal Linear(h, K); int => 1 capa oculta en el gate
+      expert_hidden_dim: null  # null => cada experto es Linear(h, n_targets); int => 1 capa oculta
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false            # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, soft, multitask, ensemble, nn, pytorch, gate, load-balance, sweep, select, train2017, val2018, GY, PH, AD, optimal, pearson-loss]

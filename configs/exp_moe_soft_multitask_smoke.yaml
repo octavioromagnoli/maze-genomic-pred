@@ -1,0 +1,62 @@
+# SMOKE TEST del soft MoE multitask: corrida chica (pocas epocas, 1 split) que verifica que el gate
+# NO colapsa antes de la corrida completa. Chequeo: entropia del gate > 0 y ningun experto con carga
+# ~0 (mezcla real, no hard top-1). Mira en wandb curve/gate_entropy y curve/gate_load_* (o corre el
+# asserter offline: python tests/test_moe_soft_multitask.py).
+#
+#   python scripts/train.py --config configs/exp_moe_soft_multitask_smoke.yaml
+
+experiment:
+  name: moe_soft_multitask_smoke
+  description: Smoke test soft MoE multitask (15 epocas, K=4) — chequea que la mezcla no degenere a hard.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018
+  train_years: [2017]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_soft_multitask
+  params:
+    hidden_dims: [128]
+    dropout: 0.5
+    input_dropout: 0.3
+    activation: relu
+    batchnorm: false
+    lr: 0.0005
+    weight_decay: 0.001
+    batch_size: 64
+    max_epochs: 15             # pocas epocas: solo verificar que el gate no colapsa
+    loss: pearson
+    loss_weights: {GY: 1.0, PH: 0.5, AD: 0.5}
+    patience: null
+    standardize_inputs: true
+    standardize_target: true
+    random_state: 575
+    device: auto
+    n_experts: 4
+    gate_tau: 1.0
+    lb_coef: 0.01
+    gate_hidden_dim: null
+    expert_hidden_dim: null
+
+bootstrap:
+  enabled: false               # smoke: sin IC (rapido)
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline                # smoke: sin login, sincronizar despues si hace falta
+  tags: [moe, soft, multitask, smoke]

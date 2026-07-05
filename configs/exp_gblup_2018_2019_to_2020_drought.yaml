@@ -1,0 +1,40 @@
+# GBLUP para GY drought: train 2018+2019 -> val 2020.
+
+experiment:
+  name: gblup_reml_2018_2019_to_2020_drought
+  description: >
+    GBLUP entrenado con 2018+2019 y evaluado sobre 2020 para GY drought.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2020
+  train_years: [2018, 2019]
+  holdout_test_year: null
+  enforce_disjoint_lines: true
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [gblup, reml, train20182019, val2020, GY, drought]

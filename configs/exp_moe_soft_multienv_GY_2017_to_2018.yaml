@@ -1,0 +1,102 @@
+# SOFT MIXTURE OF EXPERTS MULTI-AMBIENTE (GY optimal+drought) — CONFIG BASE del sweep.
+#
+# GEMELO SOFT del moe_multienv (hard, gating PCA+GMM top-1): MISMO setup de datos, MISMO fold y
+# MISMA portada, para que soft-vs-hard sea un A/B limpio en el ambiente donde el MoE le ganó a
+# GBLUP (drought: hard 0.369 vs GBLUP 0.241). Un backbone compartido ve TODOS los datos (sin partir
+# el training) y sobre el embedding h, K cabezas de experto MULTI-AMBIENTE (una salida por ambiente:
+# GY_optimal, GY_drought) se MEZCLAN con un gate blando (softmax/tau). Anti-colapso: temperatura +
+# load-balancing Switch. Prediccion = Σ_k g_k(h)·expert_k(h) -> (n, 2 cabezas de ambiente).
+#
+# ENSEMBLE (no single-seed) A PROPOSITO: en el multienv ya se verifico que el mejor single-seed
+# FALLA la regla de oro (winner's curse; ver ensemble_multitask.py). Cada trial evalua el ensemble
+# de n_models seeds -> el pearson_r_GY que optimiza el sweep es estable y el modelo desplegado ES
+# ese ensemble. Espeja exp_moe_soft_ensemble_multitask (mismo wrapper) pero en setup multi-ambiente.
+#
+# Portada = drought (cover_env: drought => pearson_r_GY del sweep = cabeza drought), IDENTICO al
+# hard multienv. loss_weights por cabeza en 1.0/1.0 y NO se barren (igual que el hard multienv: 2x
+# al target no ayudo en el multienv global) -> asi el unico eje que cambia entre soft y hard es el
+# MECANISMO de mezcla, no el setup.
+#
+# BASELINES HONESTOS a batir: (1) GBLUP-drought y (2) el multienv GLOBAL (mismo inner, sin gate).
+# SELECCION HONESTA de HP: train 2017 -> val 2018 (clavado aca), sin tocar 2019 (regla 3). El
+# reporte final (reentrenar 2017+2018 -> 2019 vs GBLUP-drought/optimal y el hard multienv) se hace
+# despues con los HP ganadores; 2020 sellado. Lo barre configs/sweep_moe_soft_multienv.yaml.
+# NO tocar cv.* ni data.* (reglas 2 y 3).
+
+experiment:
+  name: moe_soft_multienv_GY_2017_to_2018
+  description: >
+    Soft mixture of experts MULTI-AMBIENTE para GY: un backbone compartido produce un embedding h
+    entrenado sobre TODAS las lineas; K cabezas de experto multi-ambiente (una salida por ambiente:
+    GY_optimal, GY_drought) sobre h se mezclan con un gate blando (softmax/tau) con anti-colapso
+    (temperatura + load-balancing Switch). Ensemble de seeds para robustez al winner's curse.
+    Entrenado con 2017 y validado en 2018 para la SELECCION de HP. Portada = drought (gemelo soft
+    del hard multienv). 2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true            # un trait, varios ambientes como cabezas (NO usar data.targets)
+  target: GY                # trait unico
+  envs: [optimal, drought]  # una cabeza por ambiente (orden = columnas de Y)
+  cover_env: drought        # ambiente de PORTADA (pearson_r_GY del sweep = pearson de esta cabeza)
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# El backbone, los expertos y el gate hacen su preprocesamiento train-only DENTRO de fit (regla 1:
+# z-score de features y del target solo con el train del fold). No se usa el bloque `preprocess:`.
+# El ensemble promedia predicciones z-scoreadas por columna con stats de TRAIN (sin leakage).
+
+model:
+  name: ensemble_multitask
+  params:
+    inner_name: moe_soft_multitask   # el inner del ensemble ES el soft MoE (no el MLP)
+    n_models: 5               # seeds por trial (5 = balance robustez/costo; 3 si el sweep es caro)
+    seed_step: 1000           # seeds = inner.random_state + i*seed_step
+    inner:                    # HP del soft MoE; ESTO es lo que barre el sweep (model.params.inner.*)
+      # --- tronco compartido (mismo bloque, mismos rangos que el hard multienv y el soft trait) ---
+      hidden_dims: [128]      # el embedding compartido h es hidden_dims[-1]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 100
+      loss: pearson           # "pearson" | "pearson_mse"
+      loss_weights:           # claves = trait_ambiente; pesos iguales por cabeza (NO se barren)
+        GY_optimal: 1.0
+        GY_drought: 1.0
+      patience: null          # sin early stopping: con un solo ano no hay inner-split
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575        # seed BASE del ensemble (las demas: +1000, +2000, ...)
+      device: auto
+      # --- soft mixture of experts (mismo bloque/rangos que el soft trait-multitask) ---
+      n_experts: 4             # K expertos que el gate mezcla (probar 2, 4, 8 en el sweep)
+      gate_tau: 1.0            # temperatura del softmax del gate (>1 = mezcla mas blanda)
+      lb_coef: 0.01            # coef de la load-balancing loss (Switch: K*sum_k f_k*P_k)
+      gate_hidden_dim: null    # null => gate lineal Linear(h, K); int => 1 capa oculta en el gate
+      expert_hidden_dim: null  # null => cada experto es Linear(h, n_cabezas); int => 1 capa oculta
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false            # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, soft, multienv, ensemble, nn, pytorch, gate, load-balance, sweep, select, train2017, val2018, GY, optimal, drought, pearson-loss]

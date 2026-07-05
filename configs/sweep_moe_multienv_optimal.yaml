@@ -1,0 +1,80 @@
+# Sweep BAYESIANO del MoE HARD MULTI-AMBIENTE (GY optimal+drought), PORTADA OPTIMAL. Gemelo de
+# sweep_moe_multienv.yaml: MISMO metodo, MISMOS rangos, MISMO fold de seleccion; LO UNICO que
+# cambia es que el config base tiene cover_env: optimal => pearson_r_GY = cabeza OPTIMAL. Cierra la
+# tabla simetrica {soft,hard} x {optimal,drought} del informe.
+#
+# CAVEAT: en optimal GBLUP esta casi en el techo (~0.31 vs mejor NN 0.268). Es POR COMPLETITUD; el
+# premio real esta en drought. NO barre loss_weights (quedan 1.0/1.0 en el base).
+#
+# Uso:
+#   wandb sweep configs/sweep_moe_multienv_optimal.yaml      # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en screen
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_moe_multienv_pearsonGY_optimal_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 120
+
+metric:
+  name: pearson_r_GY          # cabeza OPTIMAL (cover_env: optimal del config base)
+  goal: maximize
+
+parameters:
+  # --- gating: PCA + GMM ---
+  model.params.gating.pca_n_components:
+    values: [20, 50, 100, 200]
+  model.params.gating.k:
+    values: [2, 3, 4]
+  model.params.gating.covariance_type:
+    values: [full, diag, tied]
+  model.params.gating.min_cluster_size:
+    values: [100, 150, 250]
+  # --- experts: ensemble por cluster ---
+  model.params.expert.n_models:
+    values: [3, 5]
+  # --- experts: arquitectura del tronco (NO-LINEAL) ---
+  model.params.expert.inner.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [128, 64]
+      - [256, 128]
+  model.params.expert.inner.activation:
+    values: [relu, gelu, leaky_relu]
+  model.params.expert.inner.batchnorm:
+    values: [true, false]
+  # --- experts: regularizacion ---
+  model.params.expert.inner.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.expert.inner.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.expert.inner.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- experts: optimizacion ---
+  model.params.expert.inner.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.expert.inner.batch_size:
+    values: [0, 32, 64]
+  model.params.expert.inner.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 300
+  # NOTA: loss_weights (GY_optimal/GY_drought) NO se barren -> quedan 1.0/1.0 en el config base.
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_moe_multienv_GY_optimal_2017_to_2018.yaml

@@ -1,0 +1,69 @@
+# CONFIRM 2019 (DROUGHT) — STACKING ADITIVO GBLUP + RED sobre el residual (GY - y_gblup).
+# Reentrena 2017+2018 -> val 2019 en SEQUIA. Compara contra el baseline GBLUP-drought
+# (exp_gblup_2017_2018_to_2019_drought.yaml). El numero honesto vs GBLUP: si la red del
+# residual aporta senal no-lineal real, la suma le gana a GBLUP solo. 2020 SELLADO.
+#
+# NOTA: los HP de la red son los DEFAULT del base (no barridos aun). Primera lectura honesta;
+# si aporta, se puede sweepear despues (sweep_gblup_residual.yaml). loss=mse: la suma es
+# aditiva, la red predice el residual en escala calibrada (pearson pura descalibraria).
+#
+#   python scripts/train.py --config configs/exp_gblup_residual_2017_2018_to_2019_drought.yaml
+
+experiment:
+  name: gblup_residual_2017_2018_to_2019_drought
+  description: >
+    Stacking aditivo GBLUP + red sobre el residual (GY - y_gblup), GY en SEQUIA. Reentrena
+    2017+2018 -> val 2019. GBLUP con lambda_0 por REML (base lineal); la red modela el residual
+    (loss mse) y la prediccion final suma ambas. Confirm honesto vs GBLUP-drought. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019            # ano a predecir (fold honesto de reporte)
+  train_years: [2017, 2018] # reentreno sobre todo el dev previo a 2019
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+model:
+  name: gblup_residual
+  params:
+    gblup:
+      lambda_method: reml       # base lineal determinista
+    mlp:
+      hidden_dims: [128]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 100
+      loss: mse                 # residual en escala calibrada (NUNCA pearson pura)
+      mse_weight: 0.3
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [gblup-residual, stacking, nn, gblup, confirm, train20172018, val2019, GY, drought]

@@ -1,0 +1,67 @@
+# DIAGNOSTICO (NO es el cierre): entrena SOLO en 2019 y predice 2020.
+# gblup_residual, GY optimal. Testea adyacencia (2019->2020) vs pool (2017-2019->2020). HP default.
+experiment:
+  name: gblup_residual_train2019_2020_optimal
+  description: 'DIAGNOSTICO (no es cierre): gblup_residual entrenado SOLO en 2019
+    -> predecir 2020, GY optimal. Testea si el ano adyacente predice mejor que poolear
+    2017-2019. HP default.'
+seed: 575
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+cv:
+  scheme: fixed_temporal
+  val_year: 2020
+  train_years:
+  - 2019
+  holdout_test_year: null
+  enforce_disjoint_lines: true
+model:
+  name: gblup_residual
+  params:
+    gblup:
+      lambda_method: reml
+    mlp:
+      hidden_dims:
+      - 128
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 100
+      loss: mse
+      mse_weight: 0.3
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+artifacts:
+  save_model: false
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags:
+  - gblup-residual
+  - stacking
+  - nn
+  - gblup
+  - confirm
+  - train20172018
+  - val2019
+  - GY
+  - optimal
+  - final2020
+  - holdout
+  - train2019
+  - diag2020

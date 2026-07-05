@@ -1,0 +1,67 @@
+# DEEP KERNEL TWO-STAGE (AE -> GBLUP) — CONFIRM 2019 (OPTIMAL).
+#
+# Igual que la variante drought pero env: optimal. Kernel no-lineal G = phi(X) phi(X)'/d con phi de
+# un autoencoder (BCE) train-only + GBLUP REML. Reentrena 2017+2018 -> val 2019. Compara contra
+# GBLUP-optimal (0.315). CAVEAT: en optimal GBLUP ya esta en el techo y el AE es lossy/no-supervisado
+# -> lo mas probable es que baje. 2020 SELLADO. HP del AE = defaults razonables (no barridos).
+#
+#   python scripts/train.py --config configs/exp_dk_ae_gblup_2017_2018_to_2019_optimal.yaml
+
+experiment:
+  name: dk_ae_gblup_2017_2018_to_2019_optimal
+  description: >
+    Deep kernel two-stage: autoencoder de SNPs (BCE) train-only produce phi(x) y GBLUP (REML) corre
+    sobre phi -> kernel no-lineal. GY en OPTIMAL, reentrena 2017+2018 -> val 2019. Confirm honesto
+    vs GBLUP-optimal (techo alto). 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  target: GY
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+preprocess:
+  autoencoder:
+    latent_dim: 128
+    encoder_hidden: [1024, 256]
+    activation: relu
+    dropout: 0.0
+    batchnorm: false
+    tie_weights: false
+    denoising_p: 0.1
+    lr: 0.001
+    weight_decay: 0.0
+    batch_size: 128
+    max_epochs: 300
+    patience: 30
+    val_frac: 0.1
+    seed: 575
+    device: null              # null => cuda si hay, si no cpu (el AE reducer NO acepta "auto")
+
+model:
+  name: gblup
+  params:
+    lambda_method: reml
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [deep-kernel, autoencoder, gblup, two-stage, confirm, train20172018, val2019, GY, optimal]

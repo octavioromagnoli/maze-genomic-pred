@@ -1,0 +1,68 @@
+# REPORTE 2019 del ensemble soft MoE TRAIT-MULTITASK (GY+PH+AD) en drought.
+#
+# Usa los HP ganadores del sweep soft MoE multitask m88m16yf/run 6tx7tsvu.
+# Train 2018 -> val 2019.
+
+experiment:
+  name: moe_soft_ensemble_multitask_2018_to_2019_drought
+  description: >
+    Ensemble de 5 soft MoE multitask GY+PH+AD en drought con HP ganadores del
+    sweep m88m16yf/6tx7tsvu. Entrena con 2018 y valida en 2019.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble_multitask
+  params:
+    inner_name: moe_soft_multitask
+    n_models: 5
+    seed_step: 1000
+    inner:
+      hidden_dims: [128]
+      dropout: 0.0162
+      input_dropout: 0.374
+      activation: gelu
+      batchnorm: false
+      lr: 0.00214
+      weight_decay: 6.28e-06
+      batch_size: 0
+      max_epochs: 291
+      loss: pearson
+      loss_weights: {GY: 1.0, PH: 0.318, AD: 0.895}
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+      n_experts: 2
+      gate_tau: 0.680
+      lb_coef: 0.00839
+      gate_hidden_dim: 32
+      expert_hidden_dim: null
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, soft, multitask, ensemble, train2018, val2019, GY, PH, AD, drought, pearson-loss]
