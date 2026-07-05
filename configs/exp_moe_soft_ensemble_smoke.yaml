@@ -1,0 +1,65 @@
+# SMOKE TEST del ENSEMBLE de seeds del soft MoE multitask: corrida chica (2 seeds, pocas epocas, 1
+# split) que verifica que el ensemble_multitask resuelve el inner moe_soft_multitask, entrena y
+# emite pearson_r_GY DEL ENSEMBLE. Offline, sin IC (rapido).
+#
+#   python scripts/train.py --config configs/exp_moe_soft_ensemble_smoke.yaml
+
+experiment:
+  name: moe_soft_ensemble_smoke
+  description: Smoke test del ensemble de seeds del soft MoE multitask (2 seeds, 5 epocas).
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018
+  train_years: [2017]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble_multitask
+  params:
+    inner_name: moe_soft_multitask
+    n_models: 2                # smoke: 2 seeds
+    seed_step: 1000
+    inner:
+      hidden_dims: [64]
+      dropout: 0.5
+      input_dropout: 0.3
+      activation: relu
+      batchnorm: false
+      lr: 0.0005
+      weight_decay: 0.001
+      batch_size: 64
+      max_epochs: 5            # smoke: pocas epocas
+      loss: pearson
+      loss_weights: {GY: 1.0, PH: 0.5, AD: 0.5}
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+      n_experts: 4
+      gate_tau: 1.0
+      lb_coef: 0.01
+      gate_hidden_dim: null
+      expert_hidden_dim: null
+
+bootstrap:
+  enabled: false               # smoke: sin IC (rapido)
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline                # smoke: sin login
+  tags: [moe, soft, multitask, ensemble, smoke]
