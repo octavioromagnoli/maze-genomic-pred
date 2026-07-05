@@ -1,0 +1,73 @@
+# CONFIRM 2019 del SOFT MoE MULTI-AMBIENTE (GY optimal+drought) con los HP GANADORES del sweep
+# nvphlc1o (trial wx4dyzfw, pearson_r_GY drought val2018 = 0.2411). Reentrena 2017+2018 -> val 2019:
+# el fold NO usado en la seleccion (honesto). Una corrida reporta AMBAS cabezas (optimal+drought).
+# Compara vs GBLUP-2019 (drought 0.241, optimal 0.315) y vs el hard multienv. 2020 SELLADO.
+#
+#   python scripts/train.py --config configs/exp_moe_soft_multienv_confirm_2019.yaml
+
+experiment:
+  name: moe_soft_multienv_confirm_2019
+  description: >
+    Confirm 2019 del soft MoE multi-ambiente (GY, cabezas optimal+drought) con los HP ganadores del
+    sweep nvphlc1o (K=8, tau 0.98, gate_hidden 32, hidden [256,128], leaky_relu). Ensemble de 5
+    seeds. Reentrena 2017+2018 -> val 2019. Portada drought. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble_multitask
+  params:
+    inner_name: moe_soft_multitask
+    n_models: 5
+    seed_step: 1000
+    inner:                     # HP GANADORES del sweep nvphlc1o (trial wx4dyzfw)
+      hidden_dims: [256, 128]
+      dropout: 0.6568306998161971
+      input_dropout: 0.20905136457814297
+      activation: leaky_relu
+      batchnorm: false
+      lr: 0.0002241971528921472
+      weight_decay: 1.947946502574773e-05
+      batch_size: 64
+      max_epochs: 94
+      loss: pearson
+      loss_weights: {GY_optimal: 1.0, GY_drought: 1.0}
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+      n_experts: 8
+      gate_tau: 0.9755685744486848
+      lb_coef: 0.0013663806464210722
+      gate_hidden_dim: 32
+      expert_hidden_dim: null
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, soft, multienv, ensemble, confirm, train20172018, val2019, GY, optimal, drought, pearson-loss]

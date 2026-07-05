@@ -15,12 +15,9 @@ sweep (winner's curse).
 
 ### 🔴 Prioridad ALTA — drought (la cancha donde el MoE le gana a GBLUP)
 
-- [~] **Soft multienv, portada drought** — `configs/sweep_moe_soft_multienv.yaml` — 🟢 **CORRIENDO**
-  - Base: `configs/exp_moe_soft_multienv_GY_2017_to_2018.yaml` · run_cap 120 · ~5× más barato que el hard
-  - **Por qué importa:** desempata soft-vs-hard en el ambiente donde el hard ya superó a GBLUP (0.369 vs 0.241). Es EL experimento clave.
-  - Sweep id: **`nvphlc1o`** · https://wandb.ai/oromagnoli-/maze-genomic-pred/sweeps/nvphlc1o
-  - Agente: screen `soft_drought` · log `outputs/sweep_soft_drought_nvphlc1o.log` (reattach: `screen -r soft_drought`)
-  - Lanzado 2026-07-05 17:10. Ganador: `__________` (run id) → HP a `exp_moe_soft_multienv_confirm_2019.yaml`
+- [x] **Soft multienv, portada drought** — `configs/sweep_moe_soft_multienv.yaml` — ✅ **HECHO** (120 trials, FINISHED)
+  - Sweep id: **`nvphlc1o`** · Ganador **`wx4dyzfw`** (pearson_r_GY drought val2018 = 0.2411; K=8, tau 0.98, gate_hidden 32, hidden [256,128], leaky_relu). Top-5 pegados 0.239–0.241 (landscape plano).
+  - **Confirm 2019** (`exp_moe_soft_multienv_confirm_2019.yaml`): **drought 0.291** (>GBLUP 0.241), optimal 0.279 (<GBLUP 0.315). NO se desinfló (subió de 0.24 a 0.29). Hard multienv (~0.369) sigue arriba del soft en drought.
 
 ### 🟡 Prioridad BAJA — optimal (por completitud del informe; GBLUP casi imbatible acá, ~0.31)
 
