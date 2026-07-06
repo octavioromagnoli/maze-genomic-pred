@@ -174,6 +174,48 @@ class Dataset:
         )
 
 
+    def to_modeling_arrays_multi_trait_env(
+        self,
+        targets: list[str] | tuple[str, ...] = TARGETS,
+        envs: list[str] | tuple[str, ...] = ENVIRONMENTS,
+    ) -> ModelingArrays:
+        """Arma arrays multitask con TODAS las combinaciones trait×ambiente como cabezas.
+
+        Generaliza `to_modeling_arrays_multienv` (un trait, varios ambientes) al caso de varios
+        traits Y varios ambientes: las columnas de ``Y`` son cada ``(trait, ambiente)``, en orden
+        trait-mayor ``[f"{t}_{e}" for t in targets for e in envs]`` (p.ej. con
+        ``targets=[GY,PH,AD]``/``envs=[optimal,drought]`` ⇒ 6 cabezas: GY_optimal, GY_drought,
+        PH_optimal, PH_drought, AD_optimal, AD_drought). Hay UNA fila por ``(GID, Year)`` y el tronco
+        genómico se comparte entre las 6 tareas; cada cabeza especializa.
+
+        Conserva la fila si **al menos una** de las columnas fue medida (los faltantes se enmascaran).
+        `Y` queda ``(n_obs, len(targets)*len(envs))`` con los faltantes en 0; `Y_mask` (bool, misma
+        forma) marca los datos reales. `y` se setea a la primera columna (compat con el 1D). Los
+        nombres de cabeza para alinear `loss_weights`/métricas son ``[f"{t}_{e}" ...]``.
+        """
+        targets = list(targets)
+        envs = list(envs)
+        cols = [f"{t}_{e.title()}" for t in targets for e in envs]  # wide: GY_Optimal, GY_Drought, ...
+        sub = self.pheno[["GID", "Year", *cols]]
+        sub = sub[sub[cols].notna().any(axis=1)]  # fila viva si hay >=1 trait×ambiente medido
+        row_of_gid = {g: i for i, g in enumerate(self.gid_index)}
+        rows = sub["GID"].map(row_of_gid)
+        sub = sub[rows.notna()]
+        rows = rows[rows.notna()].astype(int).to_numpy()
+        Y_raw = sub[cols].to_numpy(dtype=float)       # NaN donde esa combinación no se midió
+        Y_mask = ~np.isnan(Y_raw)                     # True = dato real (antes del fillna)
+        Y = np.nan_to_num(Y_raw, nan=0.0)             # faltantes -> 0 (evita NaN en tensores)
+        return ModelingArrays(
+            X=self.G[rows],
+            y=Y[:, 0],
+            year=sub["Year"].to_numpy(dtype=int),
+            line_id=sub["GID"].to_numpy(),
+            env=np.full(len(sub), "multi_trait_env", dtype=object),
+            Y=Y,
+            Y_mask=Y_mask,
+        )
+
+
 def load_dataset(geno_csv: str, pheno_csv: str) -> Dataset:
     """Lee los dos CSV y devuelve el `Dataset`"""
     geno = pd.read_csv(geno_csv)

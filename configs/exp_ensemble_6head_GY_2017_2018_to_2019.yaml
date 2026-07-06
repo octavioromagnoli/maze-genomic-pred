@@ -1,0 +1,72 @@
+# MULTITASK de 6 CABEZAS: 3 traits (GY, PH, AD) x 2 ambientes (optimal, drought). Tronco compartido +
+# una cabeza por combinacion (GY_optimal, GY_drought, PH_optimal, PH_drought, AD_optimal, AD_drought).
+# ensemble_multitask (5 seeds) con el HP ganador u1kgstvr. Train 2017+2018 -> val 2019.
+# Pregunta: ¿agregar PH y AD como tareas auxiliares ayuda a predecir GY (portada = GY_drought)?
+# Referencias GY_drought 2019: MoE multitask (2 cabezas GY) 0.369; ensemble global 2-cabezas 0.307;
+# GBLUP-drought 0.241.
+
+experiment:
+  name: ensemble_6head_GY_2017_2018_to_2019
+  description: >
+    Multitask de 6 cabezas (GY/PH/AD x optimal/drought), tronco compartido + una cabeza por
+    combinacion, ensemble de 5 seeds. Train 2017+2018 -> val 2019. Portada = GY_drought.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true       # 3 traits x 2 ambientes = 6 cabezas (una fila por GID x Year)
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought          # portada = GY_drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble_multitask
+  params:
+    n_models: 5
+    seed_step: 1000
+    inner:
+      hidden_dims: [128]
+      dropout: 0.2234
+      input_dropout: 0.0327
+      activation: leaky_relu
+      batchnorm: false
+      lr: 0.00101
+      weight_decay: 3.93e-05
+      batch_size: 64
+      max_epochs: 133
+      loss: pearson
+      loss_weights:            # una entrada por cabeza; pesos iguales (1.0)
+        GY_optimal: 1.0
+        GY_drought: 1.0
+        PH_optimal: 1.0
+        PH_drought: 1.0
+        AD_optimal: 1.0
+        AD_drought: 1.0
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [multitask, ensemble, 6head, 3traits, 2env, train2017-2018, val2019, GY, PH, AD, optimal, drought]

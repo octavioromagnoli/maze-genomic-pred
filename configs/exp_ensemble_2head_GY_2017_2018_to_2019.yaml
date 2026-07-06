@@ -1,0 +1,65 @@
+# MULTITASK de 2 CABEZAS: GY x (optimal, drought). Mismo ensemble_multitask + HP ganador u1kgstvr y
+# mismo fold que exp_ensemble_6head_GY_2017_2018_to_2019.yaml, pero SIN las tareas auxiliares PH/AD.
+# A/B limpio del efecto de agregar PH+AD: 2-cabezas (esto) vs 6-cabezas. Portada = GY_drought.
+
+experiment:
+  name: ensemble_2head_GY_2017_2018_to_2019
+  description: >
+    Multitask de 2 cabezas (GY optimal+drought), ensemble de 5 seeds, HP u1kgstvr. Train 2017+2018
+    -> val 2019. Contraparte de 2 cabezas del multitask de 6 cabezas.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: ensemble_multitask
+  params:
+    n_models: 5
+    seed_step: 1000
+    inner:
+      hidden_dims: [128]
+      dropout: 0.2234
+      input_dropout: 0.0327
+      activation: leaky_relu
+      batchnorm: false
+      lr: 0.00101
+      weight_decay: 3.93e-05
+      batch_size: 64
+      max_epochs: 133
+      loss: pearson
+      loss_weights:
+        GY_optimal: 1.0
+        GY_drought: 1.0
+      patience: null
+      standardize_inputs: true
+      standardize_target: true
+      random_state: 575
+      device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [multitask, ensemble, 2head, GY, 2env, train2017-2018, val2019, optimal, drought]

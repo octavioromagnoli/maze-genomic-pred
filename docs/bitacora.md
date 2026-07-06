@@ -843,3 +843,89 @@ datos. Gating en el reporte: `k=4` → clusters 192/465/1265/398; el de 192 cae 
 - **2020 sigue sellado**: esto es dev. El árbitro final (reentrenar 2017–2019 → 2020) queda para el
   cierre. Pendiente opcional antes de escribir el informe: prueba de robustez a la seed
   (subconjuntos disjuntos, como en el multienv global de la Fase A5).
+
+## Fase 8 — MoE: backbone GBLUP, rutas de gating alternativas, single-task y multitask de 6 cabezas
+
+**Objetivo:** partiendo del MoE hard de la Fase 7 (PCA+GMM, hard top-1, expert multitask 2 cabezas
+GY óptimo+sequía; **GY drought 2019 = 0.369**), probar si mejora la portada (GY drought, fold honesto
+2019) alguna de estas ideas: (a) un **backbone GBLUP** con expertos sobre el residuo `y−û`; (b)
+**espacios/rutas de gating alternativos** (breeding values û, clustering espectral sobre la matriz de
+parentesco G, PCA sobre G, ruteo soft por KNN/temperatura); (c) el **nº de tareas** del experto
+(single-task vs 2 vs 6 cabezas). Todos los números son **dev** (train 2017+2018 → val 2019, HP del
+experto = ganador `u1kgstvr` de la Fase 7 salvo aclaración); **2020 sellado**. Baselines: GBLUP-drought
+0.241, MoE hard 2-cabezas 0.369.
+
+### Familia con backbone GBLUP + ruteo alternativo — le ganan a GBLUP pero no al MoE hard
+Cuatro variantes nuevas, todas con GBLUP como base lineal (un GBLUP por trait/ambiente, train-only) y
+expertos que predicen el **residuo** `y−û` (predicción final `û + salida_experto`, con calibración
+OLS train-only porque el ensemble z-scorea su salida y la suma es aditiva). Anti-leakage estricto: G,
+GBLUP, PCA/GMM/spectral se ajustan solo con train; el û de test sale de proyectar el GBLUP entrenado
+sobre la relación genómica test↔train (genotipos, nunca fenotipos de test).
+
+| variante (config) | espacio de clustering | ruteo | GY_drought 2019 | GY_optimal | RMSE calibrada |
+|---|---|---|---|---|---|
+| [`moe_gblup_residual_multitask`](../src/models/moe_gblup_residual_multitask.py) | PCA(SNPs)+GMM | hard top-1 | **0.323** | 0.262 | sí (1.20) |
+| [`moe_gpca_multitask`](../src/models/moe_gpca_multitask.py) | **PCA sobre G**+GMM | soft (τ del GMM) | 0.323 | 0.263 | sí (1.20) |
+| [`moe_spectral_multitask`](../src/models/moe_spectral_multitask.py) (residuo) | espectral sobre G | soft KNN en G | 0.237 | 0.300 | sí (1.28) |
+| [`moe_gblup_multitask`](../src/models/moe_gblup_multitask.py) | GMM sobre û | soft KNN en û | 0.189 | 0.287 | sí (1.26) |
+
+Dos aprendizajes: **(1)** el residuo del GBLUP le gana a GBLUP en drought (0.323 vs 0.241) y da un
+modelo bien calibrado (RMSE sana, a diferencia del MoE crudo con loss Pearson), pero **no alcanza al
+MoE hard crudo (0.369)** — descomponer en `û + residuo` cuesta ~0.05 de Pearson. Un **sweep bayesiano
+dedicado de 84 trials** (`xkiq8zex`, val 2018) confirmó que el gap es **estructural, no de HP**: el
+mejor trial da 0.316 en drought 2019, igual que el HP heredado. **(2)** `moe_gpca_multitask` (PCA sobre
+G) da clusters **idénticos** y el mismo 0.323 que `moe_gblup_residual_multitask`: PCA sobre `G=ZZ'/p`
+es la **PCA dual** de los SNPs (mismos autovectores), y a τ=1 el GMM ya rutea ~hard.
+
+### El ruteo hard es la palanca; el soft diluye la señal de subpoblación
+Con **target y ruteo fijos**, el ruteo **hard top-1 (0.323) supera al soft (spectral 0.237, û 0.189)**:
+promediar las correcciones de varios expertos lava la señal de subpoblación que el hard conserva. Un
+**sweep grid de temperatura** (`u09i4uv6`, variante PCA-sobre-G, τ∈[0.25..32], val 2018) lo confirma:
+GY drought es **plano** para τ≤8 (~0.252) y **cae** para τ≥16; el mejor es el más duro (τ≤1, donde el
+GMM ya es hard). Ablandar el ruteo nunca ayuda. Caso aparte: **spectral con expertos sobre el fenotipo
+crudo** (flag `gating.residual: false`) sube a **0.293** (>GBLUP), porque sin residuo cada experto
+modela el fenotipo completo del cluster y la mezcla soft retiene más señal — pero sigue <0.369.
+
+### Single-task colapsa — el sharing multitarea es esencial en p≫n
+[`moe_singletask`](../src/models/moe_singletask.py) (mismo gating PCA+GMM, pero cada experto es un
+ensemble de MLP **single-task**, ruta single-task del harness): GY drought **0.229** (por debajo de
+GBLUP), GY optimal **0.004** (ruido). Cada experto single-task ve ~150–866 líneas de UN ambiente en
+p≫n y **sobreajusta catastróficamente**. La ventaja del MoE en drought **depende del sharing
+multitarea entre ambientes**, no solo del ruteo por clusters.
+
+### nº de cabezas × gating — el mejor resultado del proyecto (6 cabezas)
+Se agregó la vía multi-trait×multi-ambiente: [`to_modeling_arrays_multi_trait_env`](../src/data/loader.py)
++ rama `data.multi_trait_env` en [`run_multitask.py`](../src/training/run_multitask.py) ⇒ **6 cabezas**
+(GY/PH/AD × óptimo/sequía, una fila por GID×Year). El experto multitask es agnóstico al nº de cabezas,
+así que no hubo cambio de modelo. Resultado clave — el efecto de las cabezas auxiliares **se invierte
+según haya gating**:
+
+| GY_drought 2019 | 2 cabezas (GY) | 6 cabezas (+PH+AD) |
+|---|---|---|
+| **Con gating (MoE hard)** | 0.369 | **0.407** |
+| Sin gating (multitask plano, [`ensemble_multitask`](../src/models/ensemble_multitask.py)) | 0.312 | 0.275 |
+
+Y con gating la relación es **monótona**: single-task 0.229 → 2 cabezas 0.369 → **6 cabezas 0.407**
+(matching20 0.521 vs 0.472). Interpretación: los expertos por cluster están **hambrientos de datos**
+(~192–1265 líneas/subpoblación), así que las tareas auxiliares (PH, AD) **regularizan** al experto
+chico y amplifican la ventaja del gating; en el multitask plano el tronco ve todos los datos, así que
+PH/AD **diluyen** (coherente con que agregar cabezas ayuda al MoE pero perjudica a la red global, y con
+el colapso del single-task). Config: [`exp_moe_hard_6head_2017_2018_to_2019.yaml`](../configs/exp_moe_hard_6head_2017_2018_to_2019.yaml).
+
+### Ranking consolidado GY_drought 2019 y pendientes
+| # | modelo | GY_drought | nota |
+|---|---|---|---|
+| 1 | **MoE hard, expertos 6 cabezas** | **0.407** | nuevo mejor; matching20 0.521 |
+| 2 | MoE hard, 2 cabezas GY (Fase 7) | 0.369 | |
+| 3 | MoE hard + residuo GBLUP | 0.323 | RMSE calibrada; techo estructural |
+| 4 | Multitask 2 cabezas GY (sin gating) | 0.312 | |
+| 5 | MoE espectral crudo (soft KNN-G) | 0.293 | |
+| 6 | Multitask 6 cabezas (sin gating) | 0.275 | +PH+AD diluye |
+| 7 | GBLUP-drought | 0.241 | baseline |
+| 8 | MoE espectral / û residuo (soft) | 0.237 / 0.189 | el soft diluye |
+| 9 | MoE single-task | 0.229 | colapsa |
+
+**Pendiente:** el 0.407 cae dentro del IC del MoE 2-cabezas ([0.301, 0.431]); confirmar con **test
+pareado** (bootstrap cluster-línea) 6 vs 2 cabezas y, si aguanta, es el candidato a llevar al **cierre
+2020** (reentrenar 2017–2019). Opcional: sweep del MoE 6-cabezas y subir `loss_weight` de GY. Todas
+las variantes nuevas quedan registradas en [`registry.py`](../src/models/registry.py); 2020 sigue sellado.

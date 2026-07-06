@@ -1,0 +1,85 @@
+# MoE HARD (PCA+GMM, hard top-1) con expertos MULTITASK de 6 CABEZAS (GY/PH/AD x optimal/drought) —
+# cross-cycle train 2019 -> val 2020. Mismo modelo que exp_moe_hard_6head_2017_2018_to_2019.yaml
+# (el mejor en drought 2019 = 0.407) pero entrenando SOLO con 2019. min_cluster_size bajado a 150
+# porque 2019 tiene ~722 lineas. Ojo: el cross-cycle desde un solo ciclo da accuracy baja/ruido para
+# TODOS los modelos (cero overlap GID 2019-2020 + deriva de sequia). 2020 aca es evaluacion, NO el
+# cierre final. Referencias 2019->2020: GBLUP drought 0.041 / optimal 0.179; MoE hard 2-cabezas crudo
+# drought 0.067 / optimal 0.096.
+
+experiment:
+  name: moe_hard_6head_2019_to_2020
+  description: >
+    MoE hard (PCA+GMM) con expertos multitask de 6 cabezas, train 2019 -> val 2020 (cross-cycle).
+    Portada = GY_drought. 2020 aca es evaluacion, no el cierre.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true       # 6 cabezas (GY/PH/AD x optimal/drought)
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2020
+  train_years: [2019]
+  holdout_test_year: null
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_multitask
+  params:
+    gating:
+      pca_n_components: 100
+      standardize: true
+      whiten: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 150     # bajado (2019 ~722 lineas)
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, hard, multitask, 6head, 3traits, 2env, pca, gmm, cross-cycle, train2019, val2020, GY, PH, AD, optimal, drought]
