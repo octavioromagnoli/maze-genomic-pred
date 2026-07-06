@@ -1,0 +1,86 @@
+# CONFIG BASE del sweep del MoE HARD de 6 CABEZAS (moe_multitask + multi_trait_env: GY/PH/AD x
+# optimal/drought) — SELECCION honesta 2017 -> 2018. El sweep (sweep_moe_hard_6head.yaml) pisa
+# model.params.* y optimiza pearson_r_GY (= GY_drought, cover_env). Portada = GY_drought. El reporte
+# del HP ganador sobre 2019 (y luego el cierre 2020) es un paso posterior. 2020 sellado.
+#
+# Referencia: el MoE hard 6-cabezas con HP heredado (u1kgstvr) dio GY_drought 2019 = 0.407 (el mejor
+# del proyecto). El sweep busca mejorarlo con MEJOR regularizacion (los expertos por cluster estan
+# hambrientos de datos en p>>n; ver sesgo del sweep hacia dropout/wd altos y clusters mas grandes).
+
+experiment:
+  name: moe_hard_6head_2017_to_2018
+  description: >
+    MoE hard (PCA+GMM) con expertos multitask de 6 cabezas. Config base del sweep: seleccion honesta
+    train 2017 -> val 2018, portada = GY_drought. 2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true       # 6 cabezas (GY/PH/AD x optimal/drought)
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018
+  train_years: [2017]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_multitask
+  params:
+    gating:
+      pca_n_components: 100
+      standardize: true
+      whiten: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.4
+        input_dropout: 0.2
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.001
+        weight_decay: 5.0e-04
+        batch_size: 64
+        max_epochs: 120
+        loss: pearson
+        loss_weights:            # una entrada por cabeza (6); pesos iguales (las auxiliares regularizan)
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, hard, multitask, 6head, 3traits, 2env, pca, gmm, sweep, select, train2017, val2018, GY, PH, AD, optimal, drought]

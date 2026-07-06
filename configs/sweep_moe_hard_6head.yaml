@@ -1,0 +1,80 @@
+# Sweep BAYESIANO del MoE HARD de 6 CABEZAS (moe_multitask + multi_trait_env: GY/PH/AD x
+# optimal/drought), optimizando pearson_r_GY (= GY_drought, cover_env). SESGADO HACIA BUENA
+# REGULARIZACION: los expertos por cluster estan hambrientos de datos (~150-800 lineas/subpoblacion
+# en p>>n), asi que el barrido enfatiza la region regularizada —
+#   - dropout desde 0.2 (no desde 0), input_dropout desde 0.1, weight_decay con piso alto (1e-4)
+#   - redes acotadas ([64] / [128] / [128,64]; nada gigante) + opcion de batchnorm
+#   - max_epochs tope 200 (no 300) para no sobreajustar; n_models=5 fijo (el ensemble ya regulariza)
+#   - min_cluster_size hacia arriba (150/250/400): clusters mas grandes => mas datos por experto
+# Las cabezas auxiliares (PH, AD) se quedan con loss_weight=1.0: SON parte de la regularizacion
+# (regularizan al experto chico), no se barren ni se bajan.
+#
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado en el config base, sin tocar 2019). Reporte del
+# ganador sobre 2019 y luego cierre 2020 = pasos posteriores.
+#
+# Uso:
+#   wandb sweep configs/sweep_moe_hard_6head.yaml      # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en screen
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_moe_hard_6head_pearsonGY_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 100
+
+metric:
+  name: pearson_r_GY
+  goal: maximize
+
+parameters:
+  # --- gating: PCA + GMM (min_cluster_size sesgado hacia clusters grandes) ---
+  model.params.gating.pca_n_components:
+    values: [50, 100, 200]
+  model.params.gating.k:
+    values: [2, 3, 4]
+  model.params.gating.covariance_type:
+    values: [full, diag, tied]
+  model.params.gating.min_cluster_size:
+    values: [150, 250, 400]
+  # --- experts: arquitectura acotada (evitar redes que sobreajusten al cluster chico) ---
+  model.params.expert.inner.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [128, 64]
+  model.params.expert.inner.activation:
+    values: [relu, gelu, leaky_relu]
+  model.params.expert.inner.batchnorm:
+    values: [true, false]
+  # --- experts: regularizacion SESGADA ALTA ---
+  model.params.expert.inner.dropout:
+    distribution: uniform
+    min: 0.2
+    max: 0.7
+  model.params.expert.inner.input_dropout:
+    distribution: uniform
+    min: 0.1
+    max: 0.5
+  model.params.expert.inner.weight_decay:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.01
+  # --- experts: optimizacion (epochs acotados para no sobreajustar) ---
+  model.params.expert.inner.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.003
+  model.params.expert.inner.batch_size:
+    values: [32, 64]
+  model.params.expert.inner.max_epochs:
+    distribution: int_uniform
+    min: 40
+    max: 200
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_moe_hard_6head_2017_to_2018.yaml

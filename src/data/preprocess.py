@@ -14,6 +14,109 @@ from typing import Any
 import numpy as np
 
 
+def ld_prune_mask(
+    X: np.ndarray, *, window_size: int = 50, r2_threshold: float = 0.5
+) -> np.ndarray:
+    """Poda por desequilibrio de ligamiento (LD) sobre los SNPs de TRAIN (vectorizada en NumPy).
+
+    Recorre los SNPs en orden (proxy de posición genómica = orden de columnas) con una **ventana
+    deslizante** de ``window_size`` marcadores y descarta el SNP que tenga ``r² > r2_threshold`` con
+    ALGÚN SNP ya conservado dentro de la ventana (greedy indep-pairwise, estilo PLINK
+    ``--indep-pairwise``). Devuelve una **máscara booleana** ``(p,)`` (True = conservado).
+
+    ``window_size <= 0`` ⇒ modo **global** (ventana = panel entero): cada SNP se compara contra TODOS
+    los conservados. Útil cuando las columnas NO están ordenadas por posición genómica (p.ej. IDs de
+    marcador arbitrarios), donde una ventana chica no captura el LD porque los SNPs co-heredados no son
+    columnas vecinas. Más caro (O(p·conservados·n)) pero capta la redundancia sin importar el orden.
+
+    Eficiencia: se estandarizan las columnas una sola vez (``z = (x-media)/desvío`` con stats de
+    train), de modo que la correlación de Pearson es el producto interno normalizado ``(z_j·z_k)/n``;
+    cada SNP se compara contra las ≤``window_size`` columnas conservadas de la ventana con un solo
+    producto matriz-vector. Los SNPs constantes (desvío 0) quedan en 0 ⇒ correlación 0 ⇒ se conservan.
+    Se computa SOLO con train; la máscara se guarda y se aplica idéntica a val/test (`LDPruner`).
+
+    Alternativa equivalente con dependencia extra: ``skallel.locate_unlinked`` de scikit-allel.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    n, p = X.shape
+    if p == 0:
+        return np.zeros(0, dtype=bool)
+    w = int(window_size) if int(window_size) > 0 else p  # <=0 => global (ventana = panel entero)
+    thr = float(r2_threshold)
+
+    # Estandarización train-only por columna: corr(a,b) = (z_a·z_b)/n con z de media 0 y desvío 1.
+    mean = X.mean(axis=0)
+    std = X.std(axis=0)
+    nz = std > 0
+    Z = np.zeros_like(X)
+    Z[:, nz] = (X[:, nz] - mean[nz]) / std[nz]  # columnas constantes -> 0 (corr 0, siempre conservadas)
+
+    keep = np.zeros(p, dtype=bool)
+    win: list[int] = []  # índices conservados dentro de la ventana (posiciones >= j - w + 1)
+    for j in range(p):
+        # Saca de la ventana los conservados que quedaron a >= w posiciones de distancia.
+        while win and j - win[0] >= w:
+            win.pop(0)
+        if win:
+            r = (Z[:, win].T @ Z[:, j]) / n      # (len(win),) correlaciones contra los conservados
+            if np.any(r * r > thr):
+                continue                         # redundante en la ventana -> se descarta
+        keep[j] = True
+        win.append(j)
+    return keep
+
+
+class LDPruner:
+    """Paso de preprocesamiento train-only que poda SNPs por LD (ver `ld_prune_mask`).
+
+    `fit(X_train)` aprende la máscara de SNPs conservados; `transform` la aplica (a train o
+    val/test) seleccionando exactamente las mismas columnas ⇒ las dimensiones coinciden al proyectar
+    después en el PCA. Pensado para anteponerse a `SNPPreprocessor`/`PCAReducer` en la cadena de
+    gating del MoE (poda antes del PCA), sin tocar los SNPs que ven los expertos.
+
+    Args:
+        window_size: tamaño de la ventana deslizante en nº de SNPs (default 50).
+        r2_threshold: umbral de ``r²`` para considerar redundante un par (default 0.5).
+    """
+
+    def __init__(self, window_size: int = 50, r2_threshold: float = 0.5) -> None:
+        self.window_size = int(window_size)
+        self.r2_threshold = float(r2_threshold)
+
+    def fit(self, X: np.ndarray, y: Any = None) -> "LDPruner":
+        self.keep_ = ld_prune_mask(
+            X, window_size=self.window_size, r2_threshold=self.r2_threshold
+        )
+        if not self.keep_.any():
+            raise ValueError("LD pruning dejó 0 SNPs; revisá window_size/r2_threshold.")
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        if not hasattr(self, "keep_"):
+            raise RuntimeError("LDPruner.transform llamado antes de fit.")
+        return np.asarray(X, dtype=np.float64)[:, self.keep_]
+
+    def fit_transform(self, X: np.ndarray, y: Any = None) -> np.ndarray:
+        return self.fit(X, y).transform(X)
+
+    @property
+    def n_kept(self) -> int | None:
+        return int(self.keep_.sum()) if hasattr(self, "keep_") else None
+
+    def get_fitted_params(self) -> dict[str, Any]:
+        if not hasattr(self, "keep_"):
+            return {}
+        total = int(self.keep_.size)
+        kept = int(self.keep_.sum())
+        return {
+            "ld_n_kept": kept,
+            "ld_n_total": total,
+            "ld_frac_kept": float(kept / total) if total else 0.0,
+            "ld_window_size": self.window_size,
+            "ld_r2_threshold": self.r2_threshold,
+        }
+
+
 class SNPPreprocessor:
     """Filtro de MAF (+ estandarización opcional), ajustado solo con el train.
 
