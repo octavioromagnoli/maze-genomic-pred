@@ -23,6 +23,7 @@ from src.models.moe_gblup_multitask import GBLUPRoutedMoEMultitaskRegressor
 from src.models.moe_gblup_residual_multitask import GBLUPResidualHardMoEMultitaskRegressor
 from src.models.moe_gpca_multitask import GKinshipPCAMoEMultitaskRegressor
 from src.models.moe_multitask import MixtureOfExpertsMultitaskRegressor
+from src.models.moe_singletask import MixtureOfExpertsSingleTaskRegressor
 from src.models.moe_soft_multitask import SoftMoEMultitaskRegressor
 from src.models.moe_spectral_multitask import SpectralMoEGBLUPResidualMultitaskRegressor
 from src.models.xgb import XGBoostRegressor
@@ -40,6 +41,7 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "moe_gblup_residual_multitask": GBLUPResidualHardMoEMultitaskRegressor,
     "moe_gpca_multitask": GKinshipPCAMoEMultitaskRegressor,
     "moe_spectral_multitask": SpectralMoEGBLUPResidualMultitaskRegressor,
+    "moe_singletask": MixtureOfExpertsSingleTaskRegressor,
     "moe_soft_multitask": SoftMoEMultitaskRegressor,
     "cbeta_vae": CBetaVAERegressor,
     "deep_kernel_attn": DeepKernelAttentionRegressor,
