@@ -1,0 +1,82 @@
+# REPORTE del HP GANADOR del sweep de 6 cabezas k1dm08um (mejor trial qcochp7z, pearson_r_GY val2018 =
+# 0.2714) para el MoE hard de 6 cabezas. Reentrenado sobre 2017+2018 y evaluado en val 2019.
+# Comparar vs el 0.407 del HP heredado u1kgstvr. El sweep (sesgado a regularizacion) eligio red mas
+# profunda [128,64] + dropout alto 0.55 + gelu + lr bajo.
+
+experiment:
+  name: moe_hard_6head_2017_2018_to_2019_bestsweep
+  description: >
+    MoE hard de 6 cabezas con HP ganador del sweep k1dm08um/qcochp7z. Train 2017+2018 -> val 2019.
+    Portada = GY_drought. Comparar vs 0.407 (HP heredado).
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_multitask
+  params:
+    gating:
+      pca_n_components: 100
+      standardize: true
+      whiten: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128, 64]            # ganador (2 capas)
+        dropout: 0.5464840551965626       # ganador (dropout alto)
+        input_dropout: 0.1533311582507771
+        activation: gelu                  # ganador
+        batchnorm: false
+        lr: 0.00024591598998000025
+        weight_decay: 0.0005903494656076765
+        batch_size: 64
+        max_epochs: 149
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, hard, 6head, 3traits, 2env, pca, gmm, train2017-2018, val2019, GY, PH, AD, optimal, drought, bestsweep]

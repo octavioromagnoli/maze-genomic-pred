@@ -989,3 +989,58 @@ bayesiano del MoE de 6 cabezas** ([`sweep_moe_hard_6head.yaml`](../configs/sweep
 selección 2017→2018) **sesgado a buena regularización** (dropout/wd altos, redes acotadas,
 min_cluster_size grande) para intentar mejorar el 0.407; el reporte del ganador sobre 2019 queda
 pendiente. 2020 sigue sellado.
+
+## Fase 10 — GxE gating, tower networks y confirmación del campeón (validación 2019)
+
+**Objetivo:** cerrar la exploración probando dos ideas del planteo MaizeGEP sobre el mejor modelo (MoE
+hard de 6 cabezas, **GY_drought 2019 = 0.407**) y confirmar el techo con el sweep dedicado. Todo en el
+**fold honesto 2019** (train 2017+2018 → val 2019); 2020 sigue sellado.
+
+### Enrutamiento guiado por ambiente (GxE gating) y tower networks
+Dos arquitecturas nuevas, ruteo/expertos sobre el MoE de 6 cabezas:
+
+- **GxE gating** ([`moe_gxe_multitask`](../src/models/moe_gxe_multitask.py)): la compuerta concatena las
+  componentes del PCA con el **ambiente** (one-hot óptimo/sequía escalado por `env_weight`) y el GMM
+  clusteriza los puntos ``(línea, ambiente)``; ruteo **dual** — las columnas de óptimo de una línea las
+  predice el experto del cluster óptimo-aumentado y las de sequía el del cluster sequía-aumentado (misma
+  línea, distinto experto según ambiente). Es la recomendación GxE del documento.
+- **Tower networks** ([`mlp_multitask_tower`](../src/models/mlp_multitask_tower.py) como ``inner`` del
+  ensemble): experto multitask con tronco compartido + una **torre** ``Linear→act→Linear`` por cabeza,
+  para que los gradientes de sequía no se mezclen con los de óptimo en una salida plana.
+
+| MoE 6 cabezas (2019) | GY_drought | GY_optimal | matching20 (dro) |
+|---|---|---|---|
+| PCA, experto plano (campeón) | **0.407** | 0.216 | 0.521 |
+| Experto de torres | 0.398 | 0.193 | 0.500 |
+| GxE gating (env_weight 5) | 0.145 | **0.385** | 0.250 |
+
+**Las torres empatan al experto plano** (0.398 vs 0.407): la cabeza lineal compartida no era el cuello
+de botella; la no-linealidad relevante ya vive en el tronco, separar las salidas no aporta. **El GxE
+gating reorienta a óptimo** (0.385, el mejor GY_optimal del proyecto) y **hunde sequía** (0.145) —
+exactamente el patrón del gating PLS (Fase 9). El motivo cierra toda la historia: el ruteo guiado por
+ambiente **rompe el sharing cross-ambiente**; los expertos de sequía ven solo datos de sequía (ambiente
+difícil, menos datos) y pierden la fuerza prestada del óptimo. Es el mismo mecanismo del colapso del
+single-task (Fase 8) y del PLS (Fase 9): **la sequía saca fuerza del óptimo vía el experto compartido
+entre ambientes; especializar por ambiente (GxE, PLS) ayuda al ambiente fácil y perjudica al difícil.**
+La estructura de subpoblación genómica (PCA no supervisado + experto compartido) sigue siendo lo que
+gana en la portada.
+
+### Confirmación del campeón — el sweep no supera el techo
+El sweep bayesiano de 6 cabezas cerró con **99 trials** (mejor `qcochp7z`, `pearson_r_GY` val 2018 =
+0.271; el sesgo a regularización eligió red más profunda `[128,64]` + dropout alto 0.55 + gelu + lr
+bajo). Reentrenado sobre 2017+2018 → val 2019
+([`exp_moe_hard_6head_2017_2018_to_2019_bestsweep.yaml`](../configs/exp_moe_hard_6head_2017_2018_to_2019_bestsweep.yaml)):
+**GY_drought = 0.4085** (matching20 0.493), GY_optimal 0.246. Es **indistinguible del HP heredado
+(0.407)**: mejora un poco el óptimo pero no la portada. ⇒ el 0.407 ya estaba en el **techo de la
+arquitectura** para GY-sequía; el cuello de botella es la señal disponible en el fold, no el HP del
+experto.
+
+### Veredicto de la exploración
+Ninguna de las muchas alternativas probadas (backbone GBLUP + residuo, ruteo soft/espectral/PCA-sobre-G,
+temperatura, single-task, LD pruning, gating PLS/contrastivo/GxE, torres, stacking de salidas) supera en
+la portada al **MoE hard de 6 cabezas con gating PCA+GMM y experto plano**, cuyo **GY_drought 2019 ≈ 0.41
+es robusto** (dos HP independientes: 0.407 y 0.409). Es el mejor modelo del proyecto en dev. El aporte
+metodológico consolidado: (1) el **gating por subpoblación genómica** despega la señal de sequía por
+encima de GBLUP; (2) el **sharing multitarea entre ambientes** (2→6 cabezas) es esencial y regulariza a
+los expertos hambrientos de datos; (3) todo lo que **especializa por ambiente o supervisa el ruteo por
+fenotipo** reorienta hacia el ambiente fácil (óptimo) y pierde en el difícil (sequía). 2020 sigue sellado.

@@ -1,0 +1,84 @@
+# MoE HARD de 6 CABEZAS con EXPERTOS DE TORRES (tower networks) por cabeza. Ruteo PCA+GMM idéntico al
+# campeón (0.407); lo que cambia es que cada experto es un multitask con tronco compartido + una TORRE
+# (Linear->act->Linear) por cabeza, para no mezclar los gradientes de sequía con los de óptimo en una
+# salida plana. Se usa mlp_multitask_tower como inner del ensemble. A/B directo vs el experto plano.
+
+experiment:
+  name: moe_tower_6head_2017_2018_to_2019
+  description: >
+    MoE hard de 6 cabezas, experto = ensemble de mlp_multitask_tower (tronco compartido + torre por
+    cabeza). HP ganador u1kgstvr + tower_hidden_dim. Train 2017+2018 -> val 2019. Comparar vs 0.407.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_multitask
+  params:
+    gating:
+      pca_n_components: 100
+      standardize: true
+      whiten: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner_name: mlp_multitask_tower     # experto con torres por cabeza
+      inner:
+        hidden_dims: [128]
+        tower_hidden_dim: 32               # ancho de la torre por cabeza
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, hard, tower, mtl, 6head, 3traits, 2env, pca, gmm, train2017-2018, val2019, GY, PH, AD, optimal, drought, winHP]
