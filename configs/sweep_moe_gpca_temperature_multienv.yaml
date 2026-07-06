@@ -1,0 +1,35 @@
+# Sweep GRID de la TEMPERATURA del ruteo soft en la variante PCA-sobre-G (moe_gpca_multitask),
+# multi-ambiente GY, optimizando pearson_r_GY (= drought). Barre SOLO gating.temperature con el resto
+# del HP fijo (ganador u1kgstvr), para AISLAR el efecto de la softness del ruteo.
+#
+# Grid geometrico de τ (de duro a blando): a τ<=1 el GMM rutea ~hard (clusters separados => hard
+# top-1, equivalente al hard+residuo, ~0.32 drought); a τ grande la mezcla tiende a uniforme (promedia
+# todos los expertos del residuo => deberia caer hacia GBLUP). Mapea la curva drought(τ) entre ambos.
+#
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado en el config base, sin tocar 2019). El reporte
+# del mejor τ sobre 2019 es un paso posterior. 2020 sellado.
+#
+# Uso:
+#   wandb sweep configs/sweep_moe_gpca_temperature_multienv.yaml      # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en screen
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_moe_gpca_temperature_pearsonGY_2017_to_2018
+program: scripts/train.py
+method: grid
+
+metric:
+  name: pearson_r_GY
+  goal: maximize
+
+parameters:
+  model.params.gating.temperature:
+    values: [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_moe_gpca_multienv_GY_2017_to_2018.yaml

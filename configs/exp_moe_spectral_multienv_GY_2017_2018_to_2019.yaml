@@ -1,0 +1,89 @@
+# MoE con CLUSTERING ESPECTRAL sobre G + backbone GBLUP (residuo) + ruteo soft por KNN en G_test,train.
+# Fold honesto 2019, HP de expert GANADOR (u1kgstvr). Comparable directo a las otras variantes en el
+# mismo fold:
+#   - MoE hard PCA+GMM (fenotipo crudo):        drought 2019 = 0.369
+#   - MoE hard PCA+GMM + residuo GBLUP:          drought 2019 = 0.323
+#   - GBLUP-drought:                             drought 2019 = 0.241
+#   - MoE ruteo-en-û soft (descartado):          drought 2019 = 0.189
+#
+# Los 4 cambios de esta variante (ver src/models/moe_spectral_multitask.py):
+#   1. Clustering Espectral sobre la matriz de parentesco genómica G_train (afinidad = clip(G,0)).
+#   2. Target = residuo del GBLUP; prediccion final = û + salida_MoE.
+#   3. Ruteo soft por KNN sobre G_test,train (K vecinos = mayor relacion genomica; pesos = proporcion
+#      de cluster entre esos K). k_neighbors configurable.
+#   4. Anti-leakage estricto: GBLUP y spectral se ajustan solo con train; û de test = proyeccion del
+#      GBLUP via G_test,train (genotipos, nunca fenotipos de test).
+
+experiment:
+  name: moe_spectral_multienv_GY_2017_2018_to_2019
+  description: >
+    MoE con clustering espectral sobre G, backbone GBLUP + expertos sobre el residuo, ruteo soft por
+    KNN en G_test,train. HP de expert ganador u1kgstvr. Train 2017+2018 -> val 2019.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_spectral_multitask
+  params:
+    gating:                     # backbone GBLUP + clustering espectral sobre G + KNN
+      gblup:
+        lambda_method: reml
+      n_clusters: 4             # C = nº de expertos (spectral); igual al k=4 de las otras variantes
+      affinity_clip: true       # afinidad = clip(G, 0)
+      assign_labels: kmeans
+      n_init: 10
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+      k_neighbors: 10           # K vecinos de train (mayor relacion genomica) para el ruteo soft
+    expert:                     # HP ganador u1kgstvr (mismo que el hard MoE de referencia)
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, spectral, gblup-backbone, residual, knn-G, multienv, multitask, train2017-2018, val2019, GY, optimal, drought, winHP]

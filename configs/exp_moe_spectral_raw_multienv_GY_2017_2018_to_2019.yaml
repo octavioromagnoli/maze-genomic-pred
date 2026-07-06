@@ -1,0 +1,77 @@
+# MoE ESPECTRAL sobre G + ruteo soft KNN en G_test,train, expertos sobre el FENOTIPO CRUDO (residual:
+# false, SIN backbone GBLUP). A/B contra exp_moe_spectral_multienv_GY_2017_2018_to_2019 (residual:true,
+# 0.237 drought): todo idéntico salvo el target del experto (y crudo vs y-û). Fold honesto 2019, HP
+# ganador. Referencias drought 2019: hard crudo 0.369, spectral+residuo 0.237, GBLUP 0.241.
+
+experiment:
+  name: moe_spectral_raw_multienv_GY_2017_2018_to_2019
+  description: >
+    MoE con clustering espectral sobre G y ruteo soft por KNN en G_test,train, expertos sobre el
+    fenotipo crudo (sin backbone GBLUP). Train 2017+2018 -> val 2019. A/B del target vs la variante residuo.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_spectral_multitask
+  params:
+    gating:
+      residual: false           # expertos sobre y crudo (sin backbone GBLUP); la mezcla ES la predicción
+      n_clusters: 4
+      affinity_clip: true
+      assign_labels: kmeans
+      n_init: 10
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+      k_neighbors: 10
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, spectral, raw, no-residual, knn-G, multienv, multitask, train2017-2018, val2019, GY, optimal, drought, winHP]
