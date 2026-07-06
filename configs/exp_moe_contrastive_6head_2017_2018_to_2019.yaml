@@ -1,0 +1,88 @@
+# MoE HARD de 6 CABEZAS con gating CONTRASTIVO (proyector lineal + triplet loss sobre el parentesco G)
+# en vez de PCA. Idéntico a exp_moe_hard_6head_2017_2018_to_2019.yaml (campeón, GY_drought 2019 = 0.407)
+# salvo el espacio de ruteo: un proyector lineal de una capa entrenado con triplet loss junta las
+# líneas emparentadas (hermanas) y aleja las de familias distintas; el GMM clusteriza ese espacio.
+# A/B directo del espacio de ruteo. Expertos sobre SNPs completos.
+
+experiment:
+  name: moe_contrastive_6head_2017_2018_to_2019
+  description: >
+    MoE hard de 6 cabezas con gating por metric learning contrastivo (proyector lineal + triplet loss
+    sobre G). HP ganador u1kgstvr. Train 2017+2018 -> val 2019. Portada = GY_drought. Comparar vs 0.407.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_contrastive_multitask
+  params:
+    gating:
+      contrastive:              # proyector lineal + triplet loss sobre G (espacio de ruteo)
+        latent_dim: 20
+        n_pos: 5
+        n_neg: 20
+        margin: 1.0
+        epochs: 150
+        lr: 0.01
+      standardize: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, hard, contrastive, triplet, metric-learning, supervised-gating, 6head, 3traits, 2env, gmm, train2017-2018, val2019, GY, PH, AD, optimal, drought, winHP]

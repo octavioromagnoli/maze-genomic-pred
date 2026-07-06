@@ -233,6 +233,53 @@ class PCAReducer:
         }
 
 
+class PLSReducer:
+    """Reducción de dimensionalidad **supervisada** por PLS, ajustada SOLO con train (regla 1).
+
+    A diferencia del PCA (no supervisado, solo mira ``X``), PLS busca los componentes que maximizan la
+    **covarianza entre los SNPs ``X`` y el fenotipo ``y``** ⇒ un espacio latente lineal orientado a
+    separar las líneas por potencial fenotípico (p.ej. rendimiento), no solo por la mayor varianza
+    genómica. `fit(X, y)` aprende las direcciones con el train (``y`` puede ser 1-D o multi-target
+    ``(n, T)``); `transform(X)` proyecta cualquier set (val/test) SOLO desde ``X`` (sin fenotipos de
+    test). Pensado para reemplazar al `PCAReducer` en la cadena de gating del MoE.
+
+    Args:
+        n_components: componentes latentes a retener (se clampea a ``min(n_samples, n_features)``).
+        scale: estandariza ``X``/``Y`` internamente (default True; recomendado por los distintos
+            rangos de los traits en el caso multi-target).
+    """
+
+    def __init__(self, n_components: int, *, scale: bool = True) -> None:
+        self.n_components = int(n_components)
+        self.scale = bool(scale)
+
+    def fit(self, X: np.ndarray, y: Any = None) -> "PLSReducer":
+        from sklearn.cross_decomposition import PLSRegression
+
+        X = np.asarray(X, dtype=np.float64)
+        if y is None:
+            raise ValueError("PLSReducer.fit necesita `y` (supervisión); es una reducción supervisada.")
+        Y = np.asarray(y, dtype=np.float64)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+        k = min(self.n_components, min(X.shape))
+        self.n_components_ = int(max(1, k))
+        self.pls_ = PLSRegression(n_components=self.n_components_, scale=self.scale)
+        self.pls_.fit(X, Y)
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        if not hasattr(self, "pls_"):
+            raise RuntimeError("PLSReducer.transform llamado antes de fit.")
+        return self.pls_.transform(np.asarray(X, dtype=np.float64))  # proyección desde X (train components)
+
+    def fit_transform(self, X: np.ndarray, y: Any = None) -> np.ndarray:
+        return self.fit(X, y).transform(X)
+
+    def get_fitted_params(self) -> dict[str, Any]:
+        return {"pls_n_components": self.n_components_} if hasattr(self, "pls_") else {}
+
+
 class PreprocChain:
     """Cadena de pasos de preprocesamiento, todos train-only.
 

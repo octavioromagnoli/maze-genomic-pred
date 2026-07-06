@@ -21,9 +21,11 @@ from src.models.mlp import MLPRegressor
 from src.models.mlp_multitask import MLPMultitaskRegressor
 from src.models.moe_gblup_multitask import GBLUPRoutedMoEMultitaskRegressor
 from src.models.moe_gblup_residual_multitask import GBLUPResidualHardMoEMultitaskRegressor
+from src.models.moe_contrastive_multitask import MoEContrastiveMultitaskRegressor
 from src.models.moe_gpca_multitask import GKinshipPCAMoEMultitaskRegressor
 from src.models.moe_ldprune_multitask import MoELDPruneMultitaskRegressor
 from src.models.moe_multitask import MixtureOfExpertsMultitaskRegressor
+from src.models.moe_pls_multitask import MoEPLSMultitaskRegressor
 from src.models.moe_singletask import MixtureOfExpertsSingleTaskRegressor
 from src.models.moe_soft_multitask import SoftMoEMultitaskRegressor
 from src.models.moe_spectral_multitask import SpectralMoEGBLUPResidualMultitaskRegressor
@@ -42,6 +44,8 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "moe_gblup_residual_multitask": GBLUPResidualHardMoEMultitaskRegressor,
     "moe_gpca_multitask": GKinshipPCAMoEMultitaskRegressor,
     "moe_ldprune_multitask": MoELDPruneMultitaskRegressor,
+    "moe_pls_multitask": MoEPLSMultitaskRegressor,
+    "moe_contrastive_multitask": MoEContrastiveMultitaskRegressor,
     "moe_spectral_multitask": SpectralMoEGBLUPResidualMultitaskRegressor,
     "moe_singletask": MixtureOfExpertsSingleTaskRegressor,
     "moe_soft_multitask": SoftMoEMultitaskRegressor,

@@ -1,0 +1,82 @@
+# MoE HARD de 6 CABEZAS con gating PLS (supervisado por fenotipo) — cross-cycle train 2018+2019 -> val
+# 2020. Mismo modelo que exp_moe_pls_6head_2017_2018_to_2019.yaml (PLS gating) pero entrenando con
+# 2018+2019 (~2140 lineas) y evaluando en 2020. Es evaluacion cross-cycle, NO el cierre final sellado
+# (que seria 2017-2019 -> 2020). En el fold 2019 el PLS gating disparo GY_optimal (0.350) y hundio
+# GY_drought (0.160); acá se ve si ese patron (supervisado => favorece optimal) se sostiene.
+
+experiment:
+  name: moe_pls_6head_2018_2019_to_2020
+  description: >
+    MoE hard de 6 cabezas con gating PLS supervisado. Train 2018+2019 -> val 2020 (cross-cycle).
+    Portada = GY_drought; observar tambien GY_optimal (donde el PLS gating brilla).
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2020
+  train_years: [2018, 2019]
+  holdout_test_year: null
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_pls_multitask
+  params:
+    gating:
+      pls_n_components: 30
+      standardize: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, hard, pls, supervised-gating, 6head, cross-cycle, train2018-2019, val2020, GY, PH, AD, optimal, drought]

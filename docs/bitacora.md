@@ -929,3 +929,63 @@ el colapso del single-task). Config: [`exp_moe_hard_6head_2017_2018_to_2019.yaml
 pareado** (bootstrap cluster-línea) 6 vs 2 cabezas y, si aguanta, es el candidato a llevar al **cierre
 2020** (reentrenar 2017–2019). Opcional: sweep del MoE 6-cabezas y subir `loss_weight` de GY. Todas
 las variantes nuevas quedan registradas en [`registry.py`](../src/models/registry.py); 2020 sigue sellado.
+
+## Fase 9 — Alternativas de gating y featurización (validación 2019)
+
+**Objetivo:** sobre el mejor modelo (MoE hard de 6 cabezas, **GY_drought 2019 = 0.407**), probar si
+alguna alternativa de gating o de pipeline lo supera en la portada. Todo se evalúa en el **fold honesto
+2019** (train 2017+2018 → val 2019), mismo HP de expert ganador `u1kgstvr`; 2020 sigue sellado.
+
+### LD Pruning antes del PCA — la redundancia ES la estructura
+Se implementó una poda por desequilibrio de ligamiento train-only ([`ld_prune_mask`/`LDPruner`](../src/data/preprocess.py),
+greedy indep-pairwise vectorizado; máscara aprendida en train y reaplicada idéntica a test) delante
+del PCA del gating ([`moe_ldprune_multitask`](../src/models/moe_ldprune_multitask.py); los experts ven
+los SNPs completos). Resultado: **empeora** — poda en ventana de 50 (r²>0.5) baja a 0.219 (conserva el
+99%: las columnas del CSV son IDs de marcador hash-ordenados, no posición genómica, así que la ventana
+no capta LD) y la poda **global** (r²>0.5, saca 19%) baja aún más a **0.172**. Motivo conceptual: en
+un panel de mejoramiento el **LD es la estructura poblacional** (líneas emparentadas comparten bloques
+de haplotipos), justo lo que la PCA usa para separar subpoblaciones; podarlo (estándar en GWAS)
+**remueve la señal que el ruteo necesita**. Confirma además la sensibilidad del GMM (cambiar el set de
+SNPs ⇒ clustering distinto y con menos experts).
+
+### Gating supervisado: PLS y contrastivo — reorientan por ambiente
+Dos featurizaciones de ruteo **supervisadas** que reemplazan la PCA (no supervisada). El GMM
+clusteriza el nuevo espacio; los experts no cambian. Anti-leakage: se ajustan solo con train y test se
+proyecta solo desde `X`.
+
+- **PLS** ([`moe_pls_multitask`](../src/models/moe_pls_multitask.py) + [`PLSReducer`](../src/data/preprocess.py)):
+  componentes que maximizan la covarianza SNPs–fenotipo (supervisado por las 6 cabezas).
+- **Contrastivo** ([`moe_contrastive_multitask`](../src/models/moe_contrastive_multitask.py) +
+  [`ContrastiveProjector`](../src/models/contrastive_gating.py)): proyector lineal de una capa
+  entrenado con **triplet loss** sobre el parentesco genómico `G` (junta líneas emparentadas, aleja
+  familias distintas); guarda solo la matriz lineal (numpy).
+
+| gating (MoE 6 cabezas, 2019) | GY_drought | GY_optimal |
+|---|---|---|
+| PCA (no supervisado) | **0.407** | 0.216 |
+| PLS (supervisado por fenotipo) | 0.160 | **0.350** |
+| Contrastivo (triplet sobre G) | 0.295 | 0.248 |
+
+**Insight:** el ruteo **no supervisado (PCA)** capta la estructura de subpoblación que ayuda al ambiente
+**difícil (sequía)**; el **supervisado (PLS)** capta el eje fenotípico dominante (vigor/óptimo) y
+**dispara GY_optimal a 0.350** (el mejor de cualquier MoE, > GBLUP-óptimo 0.315) a costa de sequía
+(0.160, < GBLUP). El contrastivo es **PCA-like** (ambos capturan estructura poblacional genómica),
+un poco peor. Para la portada (sequía) PCA sigue ganando; si el objetivo fuera **óptimo**, el gating
+PLS sería el mejor.
+
+### Stacking sobre las salidas de la red de 6 traits — no aporta
+Meta-modelo (RidgeCV) que toma las 6 predicciones de la red de 6 cabezas como input y predice el trait
+focal (GY_drought), con features de meta-entrenamiento **out-of-sample** (etapa-1 en 2017 → features de
+2018; etapa-1 final en 2017+2018 → 2019; el meta nunca ve fenotipos de test). Da **0.269**, igual/peor
+que leer directamente la cabeza GY_drought (**0.297**) y muy lejos del gating (0.407). El meta aprende
+pesos con sentido (positivo a los traits de sequía, negativo a los de óptimo) pero sin ganancia neta:
+las 6 cabezas comparten tronco ⇒ sus salidas son redundantes entre sí. **Recombinar salidas no ayuda;
+la palanca es el ruteo por subpoblación.**
+
+### Cierre de la fase
+Ninguna alternativa supera al **MoE hard de 6 cabezas con gating PCA (0.407)** en la portada de
+validación (GY_drought 2019), que queda como mejor modelo del proyecto en dev. Corriendo: un **sweep
+bayesiano del MoE de 6 cabezas** ([`sweep_moe_hard_6head.yaml`](../configs/sweep_moe_hard_6head.yaml),
+selección 2017→2018) **sesgado a buena regularización** (dropout/wd altos, redes acotadas,
+min_cluster_size grande) para intentar mejorar el 0.407; el reporte del ganador sobre 2019 queda
+pendiente. 2020 sigue sellado.

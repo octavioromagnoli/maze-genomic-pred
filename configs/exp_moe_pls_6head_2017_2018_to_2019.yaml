@@ -1,0 +1,81 @@
+# MoE HARD de 6 CABEZAS con gating PLS (supervisado por fenotipo) en vez de PCA. Idéntico a
+# exp_moe_hard_6head_2017_2018_to_2019.yaml (campeón, GY_drought 2019 = 0.407) salvo que el espacio
+# de ruteo se arma con PLS (maximiza covarianza X-Y, orientado a separar por potencial de rendimiento)
+# en vez de PCA. A/B directo del espacio de ruteo. Expertos sobre SNPs completos.
+
+experiment:
+  name: moe_pls_6head_2017_2018_to_2019
+  description: >
+    MoE hard de 6 cabezas con gating PLS supervisado por las 6 cabezas de fenotipo. HP ganador
+    u1kgstvr. Train 2017+2018 -> val 2019. Portada = GY_drought. Comparar vs 0.407 (PCA).
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_pls_multitask
+  params:
+    gating:
+      pls_n_components: 30      # componentes latentes del PLS (espacio de ruteo supervisado)
+      standardize: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, hard, pls, supervised-gating, 6head, 3traits, 2env, gmm, train2017-2018, val2019, GY, PH, AD, optimal, drought, winHP]

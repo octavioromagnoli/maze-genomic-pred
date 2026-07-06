@@ -252,7 +252,8 @@ def main() -> None:
     if config.get("model", {}).get("name") in (
         "mlp_multitask", "ensemble_multitask", "moe_multitask", "moe_gblup_multitask",
         "moe_gblup_residual_multitask", "moe_gpca_multitask", "moe_ldprune_multitask",
-        "moe_spectral_multitask", "moe_soft_multitask",
+        "moe_pls_multitask", "moe_contrastive_multitask", "moe_spectral_multitask",
+        "moe_soft_multitask",
     ):
         results = run_multitask_evaluation(
             config, log_fn=make_wandb_logger(run), return_models=save_model

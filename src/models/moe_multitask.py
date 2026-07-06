@@ -88,6 +88,16 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
     def _make_expert(self) -> EnsembleMultitaskRegressor:
         return EnsembleMultitaskRegressor({"params": dict(self.expert_params)})
 
+    def _fit_gating(self, X: np.ndarray, Y: np.ndarray, Y_mask: np.ndarray) -> np.ndarray:
+        """Ajusta la featurización del gating (train-only) y devuelve las features ``Z`` para el GMM.
+
+        Default no supervisado (PCA): ignora ``Y``/``Y_mask``. Las variantes supervisadas
+        (`moe_pls_multitask`, `moe_contrastive_multitask`) lo overridean para orientar el espacio de
+        ruteo por el fenotipo o por el parentesco. Guarda la cadena ajustada en ``self.pre_``.
+        """
+        self.pre_ = self._build_gating()
+        return self.pre_.fit_transform(X)
+
     @staticmethod
     def _as_2d(p: Any) -> np.ndarray:
         p = np.asarray(p, dtype=float)
@@ -112,9 +122,8 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
         k = int(g["k"])
         self.k_ = k
 
-        # --- Gating: PCA + GMM ajustados SOLO con el train (regla 1) ---------
-        self.pre_ = self._build_gating()
-        Z = self.pre_.fit_transform(X)
+        # --- Gating: featurización (PCA por default) + GMM, train-only (regla 1) ---
+        Z = self._fit_gating(X, Y, Y_mask)   # hook: las variantes supervisadas (PLS, contrastivo) lo overridean
         self.gmm_ = GaussianMixture(
             n_components=k,
             covariance_type=str(g["covariance_type"]),
