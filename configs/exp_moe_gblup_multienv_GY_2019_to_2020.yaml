@@ -1,0 +1,86 @@
+# MoE RUTEADO EN ESPACIO GBLUP, MULTI-AMBIENTE (GY optimal+drought) — cross-cycle 2019 -> 2020.
+#
+# Mismo modelo que exp_moe_gblup_multienv_GY_2017_2018_to_2019.yaml (moe_gblup_multitask: û del
+# GBLUP como espacio de ruteo, expertos sobre el residuo, ruteo soft KNN) pero entrenando SOLO con
+# 2019 y evaluando en 2020. Es el test cross-cycle (espeja exp_moe_hard_multienv_GY_2019_to_2020),
+# NO el cierre final (que reentrena todo el dev 2017-2019). Baselines a batir: GBLUP y el MoE hard
+# en el mismo fold. Ojo: predecir 2020 desde un solo ciclo suele dar accuracy baja (cero overlap de
+# GID entre 2019 y 2020 + deriva de sequia). HP del expert heredados del MoE hard (sin sweep).
+
+experiment:
+  name: moe_gblup_multienv_GY_2019_to_2020
+  description: >
+    MoE multi-ambiente para GY ruteado en el espacio de breeding values del GBLUP (û), expertos
+    sobre el residuo y-û, ruteo soft KNN. Entrena SOLO con 2019 y evalua en 2020 (cross-cycle).
+    Baselines: GBLUP y MoE hard en el mismo fold. 2020 aca es evaluacion, no el cierre final.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2020
+  train_years: [2019]
+  holdout_test_year: null
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_gblup_multitask
+  params:
+    gating:
+      gblup:
+        lambda_method: reml
+      standardize: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 150
+      global_fallback: true
+      random_state: 575
+      routing: knn
+      k_neighbors: 30
+      temperature: 1.0
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.5
+        input_dropout: 0.3
+        activation: relu
+        batchnorm: false
+        lr: 0.0005
+        weight_decay: 0.001
+        batch_size: 64
+        max_epochs: 100
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, gblup-routed, residual, soft-knn, multienv, multitask, cross-cycle, train2019, val2020, GY, optimal, drought]

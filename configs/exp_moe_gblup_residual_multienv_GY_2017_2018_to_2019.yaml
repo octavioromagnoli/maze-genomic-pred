@@ -1,0 +1,83 @@
+# MoE HARD con GBLUP backbone: ruteo PCA+GMM hard top-1 (idéntico al hard ganador) + expertos sobre
+# el RESIDUO y-û. Fold honesto 2019, HP de expert GANADOR (u1kgstvr). Aísla "impulsar la red con el
+# GBLUP" sobre la arquitectura que gana. Referencias mismas condiciones:
+#   - MoE hard (fenotipo crudo): drought 2019 = 0.369
+#   - MoE ruteado en û + soft (moe_gblup_multitask): drought 2019 = 0.189
+#   - GBLUP-drought: 0.241
+
+experiment:
+  name: moe_gblup_residual_multienv_GY_2017_2018_to_2019
+  description: >
+    MoE hard (PCA+GMM, hard top-1) con GBLUP backbone: expertos sobre el residuo y-û, prediccion
+    final û + experto. HP de expert ganador u1kgstvr. Train 2017+2018 -> val 2019. Aisla el efecto
+    del GBLUP-boosting sobre el ruteo que gana.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_gblup_residual_multitask
+  params:
+    gating:                     # backbone GBLUP + ruteo PCA+GMM (idéntico al hard ganador)
+      gblup:
+        lambda_method: reml
+      pca_n_components: 100
+      standardize: true
+      whiten: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:                     # HP ganador u1kgstvr (mismo que el hard MoE de referencia)
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, hard, gblup-backbone, residual, pca, gmm, multienv, multitask, train2017-2018, val2019, GY, optimal, drought, winHP]

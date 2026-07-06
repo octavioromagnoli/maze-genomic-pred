@@ -1,0 +1,85 @@
+# MoE RUTEADO EN ESPACIO GBLUP (residuo + soft KNN) — fold honesto 2019, HP de expert GANADOR.
+#
+# Igual que exp_moe_gblup_multienv_GY_2017_2018_to_2019.yaml pero con el MISMO HP de expert que el
+# MoE hard ganador (u1kgstvr: hidden [128] leaky_relu, dropout 0.2234, lr 0.00101, wd 3.93e-05,
+# max_epochs 133, n_models 5) y gating comparable (k=4, cov=full, min_cluster_size=250). Asi la
+# UNICA diferencia con exp_moe_hard_multienv_GY_2017_2018_to_2019.yaml son los tres cambios de la
+# variante: ruteo en û del GBLUP (no PCA), target = residuo (no fenotipo), ruteo soft KNN (no hard).
+# Aisla el efecto de la "mejora" a HP fijo.
+
+experiment:
+  name: moe_gblup_multienv_GY_2017_2018_to_2019_winHP
+  description: >
+    MoE ruteado en espacio GBLUP con el HP de expert ganador del MoE hard (u1kgstvr). Train
+    2017+2018 -> val 2019. Comparacion apples-to-apples contra el MoE hard a HP fijo.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multienv: true
+  target: GY
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_gblup_multitask
+  params:
+    gating:
+      gblup:
+        lambda_method: reml
+      standardize: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+      routing: knn
+      k_neighbors: 30
+      temperature: 1.0
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.2234
+        input_dropout: 0.0327
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.00101
+        weight_decay: 3.93e-05
+        batch_size: 64
+        max_epochs: 133
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, gblup-routed, residual, soft-knn, multienv, multitask, train2017-2018, val2019, GY, optimal, drought, winHP]
