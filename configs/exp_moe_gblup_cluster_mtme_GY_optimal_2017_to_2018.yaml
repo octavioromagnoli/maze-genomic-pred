@@ -1,0 +1,101 @@
+# MoE HARD MULTITASK + MULTI-AMBIENTE (6 CABEZAS: GY/PH/AD x optimal/drought, PORTADA GY_OPTIMAL) con
+# CLUSTERING SOBRE PREDICCIONES GBLUP — CONFIG BASE del sweep. Combina las dos ideas anteriores: una
+# sola red con 6 cabezas f"{trait}_{ambiente}" (tronco compartido). El gating clusteriza el espacio
+# de predicciones GBLUP por cabeza ([GY_opt_hat, GY_dro_hat, PH_opt_hat, ...]) — train-only,
+# supervisado, de baja dimension (6D).
+#
+# PORTADA = GY_OPTIMAL (data.cover: GY_optimal => pearson_r_GY del sweep = cabeza GY_optimal en val
+# 2018). El sweep optimiza esa cabeza aunque la red aprenda las 6.
+#
+# ROBUSTEZ (clave del pedido): NO hay clustering fijo. Ensamble de n_seeds miembros; POR SEED se
+# ajusta un GMM propio (clustering distinto) + una red de 6 cabezas por cluster, y se promedian
+# (z-scoreadas) las predicciones. Salvaguardas p>>n: min_cluster_size + global fallback.
+#
+# BASELINE HONESTO a batir: la red de 6 cabezas GLOBAL (mismo expert.inner, sin gating) y GBLUP.
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado aca), sin tocar 2019 (regla 3). El reporte final
+# (reentrenar 2017+2018 -> 2019) se hace aparte con los HP ganadores; 2020 sellado. Lo barre
+# configs/sweep_moe_gblup_cluster_mtme_optimal.yaml. NO tocar cv.* ni data.* (reglas 2 y 3).
+#
+#   python scripts/train.py --config configs/exp_moe_gblup_cluster_mtme_GY_optimal_2017_to_2018.yaml
+
+experiment:
+  name: moe_gblup_cluster_mtme_GY_optimal_2017_to_2018
+  description: >
+    MoE hard 6 cabezas (GY/PH/AD x optimal/drought), portada GY_optimal, clusterizando las
+    predicciones GBLUP por cabeza (train-only) con GMM; una red de 6 cabezas por cluster + fallback
+    global. Ensamble sobre n_seeds miembros que re-clusterizan (robustez). Train 2017 -> val 2018. 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multitask_multienv: true  # 6 cabezas: TODAS las combinaciones trait x ambiente (NO usar data.target/env)
+  targets: [GY, PH, AD]     # traits (orden trait-mayor de las columnas de Y)
+  envs: [optimal, drought]  # ambientes por trait
+  cover: GY_optimal         # PORTADA = GY_optimal (pearson_r_GY del sweep = esa cabeza)
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# El gating (GBLUP + GMM) y cada red hacen su preprocesamiento train-only DENTRO de fit (regla 1).
+
+model:
+  name: moe_gblup_cluster
+  params:
+    gating:                       # clustering sobre las 6 predicciones GBLUP (train-only)
+      mode: gblup                  # gblup | pca_gblup | pca
+      gblup_targets: null          # null => usa las 6 cabezas
+      gblup_lambda_method: reml    # determinista y barato (una eigendescomposicion por cabeza)
+      gblup_standardize: true      # z-score por-cabeza de las predicciones antes de clusterizar
+      k: 3                         # nº de clusters GMM (HP del sweep)
+      covariance_type: full        # full | diag | tied | spherical
+      reg_covar: 1.0e-6            # estabilidad numerica del GMM
+      n_init: 1                    # reinicios del EM
+      min_cluster_size: 150        # cluster con menos filas => sin red propia (usa fallback)
+      global_fallback: true        # red sobre TODO el train, para clusters chicos/vacios
+    ensemble:                     # ensamble sobre clusterings (robustez)
+      n_seeds: 5                   # nº de (clustering + red) a promediar
+      seed_step: 1000              # seed_s = inner.random_state + s*seed_step
+    expert:
+      inner:                       # params del MLPMultitaskRegressor de 6 cabezas (una red por cluster)
+        hidden_dims: [128]         # tronco NO-LINEAL (la variante lineal no supera a GBLUP)
+        dropout: 0.5
+        input_dropout: 0.3
+        activation: relu
+        batchnorm: false
+        lr: 0.0005
+        weight_decay: 0.001
+        batch_size: 64
+        max_epochs: 100            # sin early stopping (un solo ano de train)
+        loss: pearson              # "pearson" | "pearson_mse"
+        loss_weights:              # claves = trait_ambiente; GY_optimal (portada) anclado en 1.0
+          GY_optimal: 1.0
+          GY_drought: 0.5          # cabezas auxiliares (el sweep las pisa en [0, 1])
+          PH_optimal: 0.5
+          PH_drought: 0.5
+          AD_optimal: 0.5
+          AD_drought: 0.5
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575          # seed BASE del ensemble (cada miembro: base + s*seed_step)
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false               # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, hard, multitask, multienv, 6heads, gblup-cluster, gmm, ensemble, sweep, select, train2017, val2018, GY, optimal, cover-gy-optimal, pearson-loss]

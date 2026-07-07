@@ -1,0 +1,93 @@
+# Sweep BAYESIANO del MoE HARD MULTI-AMBIENTE (GY optimal+drought, PORTADA OPTIMAL) con CLUSTERING
+# COMBINADO PCA + GBLUP, optimizando PEARSON DE LA CABEZA OPTIMAL (pearson_r_GY, con cover_env:
+# optimal en el config base). Gemelo multi-ambiente de sweep_moe_pca_gblup_cluster_optimal: el ESPACIO
+# de clustering combina [PCA(SNPs) | gblup_weight * z(GBLUP)]; ademas de k / covarianza /
+# min_cluster_size y la red por cluster, barre las dos perillas del espacio combinado
+# (pca_n_components y gblup_weight). El ensamble sobre seeds (n_seeds) queda FIJO (robustez). Unica
+# diferencia con el gemelo trait-multitask: la loss auxiliar barrida es GY_drought (GY_optimal en 1.0).
+#
+# SELECCION HONESTA: train 2017 -> val 2018 (clavado en el config base, sin tocar 2019). El reporte
+# final (reentrenar 2017+2018 -> 2019 vs GBLUP-optimal / multienv global) es un paso posterior con
+# los HP ganadores; 2020 sellado.
+#
+# COSTO: cada trial ajusta 2 GBLUP (deterministas, una vez) + una PCA + n_seeds*(k+1) redes.
+#
+# Uso:
+#   wandb login
+#   wandb sweep configs/sweep_moe_pca_gblup_cluster_multienv_optimal.yaml     # imprime el <sweep_id>
+#   WANDB_MODE=online wandb agent oromagnoli-/maze-genomic-pred/<sweep_id>   # en tmux/screen
+
+entity: oromagnoli-
+project: maze-genomic-pred
+name: sweep_moe_pca_gblup_cluster_multienv_pearsonGYoptimal_2017_to_2018
+program: scripts/train.py
+method: bayes
+run_cap: 120
+
+metric:
+  name: pearson_r_GY          # cabeza OPTIMAL (cover_env: optimal del config base)
+  goal: maximize
+
+parameters:
+  # --- gating: espacio combinado PCA + GBLUP ---
+  model.params.gating.pca_n_components:
+    values: [20, 50, 100, 200]
+  model.params.gating.gblup_weight:      # peso del bloque GBLUP vs PCA (log: barre ~[0.5, 20])
+    distribution: log_uniform_values
+    min: 0.5
+    max: 20.0
+  # --- gating: GMM ---
+  model.params.gating.k:
+    values: [2, 3, 4]
+  model.params.gating.covariance_type:
+    values: [full, diag, tied]
+  model.params.gating.min_cluster_size:
+    values: [100, 150, 200]
+  # --- red por cluster: arquitectura del tronco (mlp_multitask multi-ambiente) ---
+  model.params.expert.inner.hidden_dims:
+    values:
+      - [64]
+      - [128]
+      - [256]
+      - [128, 64]
+      - [256, 128]
+  model.params.expert.inner.activation:
+    values: [relu, gelu, leaky_relu]
+  model.params.expert.inner.batchnorm:
+    values: [true, false]
+  # --- red por cluster: regularizacion (clave en p >> n, mas aun con subsets chicos por cluster) ---
+  model.params.expert.inner.dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.7
+  model.params.expert.inner.input_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  model.params.expert.inner.weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.01
+  # --- red por cluster: optimizacion ---
+  model.params.expert.inner.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.005
+  model.params.expert.inner.batch_size:
+    values: [0, 32, 64]           # 0 = full-batch
+  model.params.expert.inner.max_epochs:
+    distribution: int_uniform
+    min: 20
+    max: 300
+  # --- peso de la cabeza auxiliar drought (GY_optimal anclado en 1.0 en el config base) ---
+  model.params.expert.inner.loss_weights.GY_drought:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config"
+  - configs/exp_moe_pca_gblup_cluster_multienv_GY_optimal_2017_to_2018.yaml

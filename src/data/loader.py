@@ -173,6 +173,48 @@ class Dataset:
             Y_mask=Y_mask,
         )
 
+    def to_modeling_arrays_multitask_multienv(
+        self,
+        targets: list[str] | tuple[str, ...] = TARGETS,
+        envs: list[str] | tuple[str, ...] = ENVIRONMENTS,
+    ) -> ModelingArrays:
+        """Arma arrays multitask multi-AMBIENTE: TODAS las combinaciones trait×ambiente como cabezas.
+
+        Combina las dos ideas de `to_modeling_arrays_multitask` (varios traits en un ambiente) y
+        `to_modeling_arrays_multienv` (un trait, varios ambientes): hay UNA fila por ``(GID, Year)`` y
+        las columnas de ``Y`` son ``len(targets) * len(envs)`` cabezas ``f"{trait}_{env}"`` (p.ej.
+        ``[GY_optimal, GY_drought, PH_optimal, PH_drought, AD_optimal, AD_drought]``, orden
+        trait-mayor). Así una sola red comparte el tronco genómico entre TODOS los traits y ambientes
+        y una cabeza por (trait, ambiente) especializa.
+
+        Conserva la fila si **al menos una** cabeza fue medida (los faltantes se enmascaran). `Y` queda
+        ``(n_obs, len(targets)*len(envs))`` con los faltantes en 0; `Y_mask` (bool, misma forma) marca
+        los datos reales. `y` se setea a la primera columna (compat con el 1D). Los nombres de cabeza
+        para alinear `loss_weights`/cover son ``[f"{t}_{e}" for t in targets for e in envs]``.
+        """
+        targets = list(targets)
+        envs = list(envs)
+        heads = [(t, e) for t in targets for e in envs]          # orden trait-mayor
+        cols = [f"{t}_{e.title()}" for (t, e) in heads]          # columnas wide (p.ej. GY_Optimal)
+        sub = self.pheno[["GID", "Year", *cols]]
+        sub = sub[sub[cols].notna().any(axis=1)]                 # fila viva si hay >=1 cabeza medida
+        row_of_gid = {g: i for i, g in enumerate(self.gid_index)}
+        rows = sub["GID"].map(row_of_gid)
+        sub = sub[rows.notna()]
+        rows = rows[rows.notna()].astype(int).to_numpy()
+        Y_raw = sub[cols].to_numpy(dtype=float)                  # NaN donde esa (trait,ambiente) no se midió
+        Y_mask = ~np.isnan(Y_raw)                                # True = dato real (antes del fillna)
+        Y = np.nan_to_num(Y_raw, nan=0.0)                       # faltantes -> 0 (evita NaN en tensores)
+        return ModelingArrays(
+            X=self.G[rows],
+            y=Y[:, 0],
+            year=sub["Year"].to_numpy(dtype=int),
+            line_id=sub["GID"].to_numpy(),
+            env=np.full(len(sub), "multitask_multienv", dtype=object),
+            Y=Y,
+            Y_mask=Y_mask,
+        )
+
 
 def load_dataset(geno_csv: str, pheno_csv: str) -> Dataset:
     """Lee los dos CSV y devuelve el `Dataset`"""

@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from src.data.loader import ENVIRONMENTS, load_dataset
+from src.data.loader import ENVIRONMENTS, TARGETS, load_dataset
 from src.eval.metrics import (
     bootstrap_ci,
     coincidence_index,
@@ -58,7 +58,14 @@ def run_multitask_evaluation(
     # --- Carga + arrays multitask (Y, Y_mask) --------------------------------
     dataset = load_dataset(data_cfg["geno_csv"], data_cfg["pheno_csv"])
     env = data_cfg.get("env")  # None => apila optimal + drought (solo modo trait-multitask)
-    if data_cfg.get("multienv"):
+    if data_cfg.get("multitask_multienv"):
+        # 6 cabezas: TODAS las combinaciones trait×ambiente (GY/PH/AD × optimal/drought). Una fila
+        # por (GID, Year); las columnas de Y son f"{trait}_{env}" (orden trait-mayor).
+        traits = list(data_cfg.get("targets") or list(TARGETS))
+        envs = list(data_cfg.get("envs") or list(ENVIRONMENTS))
+        arrays = dataset.to_modeling_arrays_multitask_multienv(targets=traits, envs=envs)
+        targets = [f"{t}_{e}" for t in traits for e in envs]  # nombres de cabeza (= columnas de Y)
+    elif data_cfg.get("multienv"):
         # Multi-AMBIENTE: UN trait, varios ambientes como cabezas (tronco compartido,
         # una cabeza por ambiente). El loader arma Y=[target_env...] por (GID, Year).
         target = data_cfg.get("target", "GY")
@@ -197,7 +204,15 @@ def run_multitask_evaluation(
     # El sweep optimiza Pearson de la PORTADA DIRECTAMENTE (no el promedio de traits).
     # Multi-ambiente: la portada es el trait en el ambiente `cover_env` (default drought,
     # el caso donde la red supera a GBLUP); trait-multitask: GY.
-    if data_cfg.get("multienv"):
+    if data_cfg.get("multitask_multienv"):
+        # 6 cabezas: la portada es la cabeza `data.cover` (default f"{cover_trait}_{cover_env}",
+        # p.ej. GY_optimal). El sweep optimiza esa cabeza aunque la red aprenda las 6.
+        primary = data_cfg.get("cover") or (
+            f"{data_cfg.get('cover_trait', 'GY')}_{data_cfg.get('cover_env', 'optimal')}"
+        )
+        if primary not in targets:
+            primary = targets[0]
+    elif data_cfg.get("multienv"):
         primary = f"{data_cfg.get('target', 'GY')}_{data_cfg.get('cover_env', 'drought')}"
         if primary not in targets:
             primary = targets[0]

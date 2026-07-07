@@ -1,0 +1,95 @@
+# MoE HARD MULTITASK (GY+PH+AD, optimal) con CLUSTERING SOBRE PREDICCIONES GBLUP — CONFIG BASE del
+# sweep. Variante del hard viejo (moe_multitask): en vez de clusterizar la PCA de los SNPs, se
+# clusteriza el espacio de predicciones GBLUP por trait ([GY_hat, PH_hat, AD_hat]) — supervisado,
+# aditivo y de baja dimension. Cada expert (una red multitask) atiende un cluster; salvaguardas
+# p>>n: min_cluster_size + global fallback (red sobre todo el train).
+#
+# ROBUSTEZ (clave del pedido): NO hay un clustering fijo. El modelo ensambla n_seeds miembros; por
+# seed se ajusta un GMM propio (clustering distinto) + una red por cluster, y se promedian
+# (z-scoreadas por columna) las predicciones de todas las seeds. Asi ni el clustering ni la red
+# quedan atados a una sola seed.
+#
+# BASELINE HONESTO a batir: la red multitask GLOBAL (mismo expert.inner, sin gating) y GBLUP.
+# SELECCION HONESTA de HP: train 2017 -> val 2018 (clavado aca), sin tocar 2019 (regla 3). El
+# reporte final (reentrenar 2017+2018 -> 2019) se hace aparte con los HP ganadores; 2020 sellado.
+# Lo barre configs/sweep_moe_gblup_cluster_optimal.yaml. NO tocar cv.* ni data.* (reglas 2 y 3).
+#
+#   python scripts/train.py --config configs/exp_moe_gblup_cluster_2017_to_2018.yaml
+
+experiment:
+  name: moe_gblup_cluster_2017_to_2018
+  description: >
+    MoE hard multitask GY+PH+AD (optimal) clusterizando las predicciones GBLUP por trait (train-only)
+    con GMM; una red multitask por cluster + fallback global. Ensamble sobre n_seeds miembros que
+    re-clusterizan (robustez ante clustering fijo). Train 2017 -> val 2018 (seleccion de HP). 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  targets: [GY, PH, AD]     # multitask: lista de traits (orden = columnas de Y)
+  env: optimal
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018            # inner-val de seleccion (honesto)
+  train_years: [2017]       # solo 2017
+  holdout_test_year: 2020   # 2020 fuera (intocable)
+  enforce_disjoint_lines: true
+
+# El gating (GBLUP + GMM) y cada red hacen su preprocesamiento train-only DENTRO de fit (regla 1).
+# No se usa el bloque `preprocess:`. save/load overridean torch (redes) + joblib (GBLUP/GMM).
+
+model:
+  name: moe_gblup_cluster
+  params:
+    gating:                       # clustering sobre predicciones GBLUP (train-only)
+      mode: gblup                  # gblup | pca_gblup | pca
+      gblup_targets: null          # null => usa GY+PH+AD; o subset (p.ej. [GY])
+      gblup_lambda_method: reml    # determinista y barato (una eigendescomposicion por trait)
+      gblup_standardize: true      # z-score por-trait de las predicciones antes de clusterizar
+      k: 3                         # nº de clusters GMM (HP del sweep)
+      covariance_type: full        # full | diag | tied | spherical
+      reg_covar: 1.0e-6            # estabilidad numerica del GMM
+      n_init: 1                    # reinicios del EM
+      min_cluster_size: 150        # cluster con menos filas => sin red propia (usa fallback)
+      global_fallback: true        # red sobre TODO el train, para clusters chicos/vacios
+    ensemble:                     # ensamble sobre clusterings (robustez)
+      n_seeds: 5                   # nº de (clustering + red) a promediar
+      seed_step: 1000              # seed_s = inner.random_state + s*seed_step
+    expert:
+      inner:                       # params del MLPMultitaskRegressor (una red por cluster; el sweep los pisa)
+        hidden_dims: [128]
+        dropout: 0.5
+        input_dropout: 0.3
+        activation: relu
+        batchnorm: false
+        lr: 0.0005
+        weight_decay: 0.001
+        batch_size: 64
+        max_epochs: 100            # sin early stopping (un solo ano de train)
+        loss: pearson              # "pearson" | "pearson_mse"
+        loss_weights:              # L = sum_i w_i * (1 - r_i) por trait; mas peso a GY (portada)
+          GY: 1.0
+          PH: 0.5
+          AD: 0.5
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575          # seed BASE del ensemble (cada miembro: base + s*seed_step)
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false               # el sweep no guarda modelos; el final se reentrena aparte
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, hard, multitask, gblup-cluster, gmm, ensemble, sweep, select, train2017, val2018, GY, PH, AD, optimal, pearson-loss]

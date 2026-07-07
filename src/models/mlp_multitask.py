@@ -279,6 +279,12 @@ class MLPMultitaskRegressor(BaseModel):
             else:
                 perm = torch.randperm(n, device=device)
                 batches = list(torch.split(perm, bs))
+                # Un último batch de tamaño 1 rompe BatchNorm en train ("Expected more than 1
+                # value per channel"); lo fusiona con el anterior (sin perder muestras). Aparece
+                # con batchnorm=True + mini-batch cuando n % bs == 1 (p.ej. clusters del MoE).
+                if len(batches) > 1 and batches[-1].numel() < 2:
+                    batches[-2] = torch.cat([batches[-2], batches[-1]])
+                    batches.pop()
             run_loss = 0.0
             seen = 0
             for idx in batches:
