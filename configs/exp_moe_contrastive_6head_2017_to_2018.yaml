@@ -1,0 +1,90 @@
+# CONFIG BASE del sweep del MoE HARD de 6 CABEZAS con gating CONTRASTIVO (proyector lineal + triplet
+# loss sobre el parentesco G) — SELECCION honesta 2017 -> 2018. El sweep (sweep_moe_contrastive_6head.yaml)
+# pisa model.params.* y optimiza pearson_r_GY (= GY_DROUGHT, cover_env: drought): A/B directo del
+# espacio de ruteo contra el campeon PCA (0.407). Con HP heredado (u1kgstvr) dio 0.295 en sequia;
+# se busca si otra via de gating (metric learning sobre G) se acerca al 0.407.
+# El reporte del HP ganador sobre 2019 (y luego cierre 2020) es un paso posterior. 2020 sellado.
+
+experiment:
+  name: moe_contrastive_6head_2017_to_2018
+  description: >
+    MoE hard con gating contrastivo (proyector lineal + triplet loss sobre G) + GMM, expertos multitask
+    de 6 cabezas. Config base del sweep: seleccion honesta train 2017 -> val 2018, portada = GY_drought.
+    2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought          # portada del sweep = GY_drought (A/B contra el PCA 0.407)
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018
+  train_years: [2017]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_contrastive_multitask
+  params:
+    gating:
+      contrastive:
+        latent_dim: 20
+        n_pos: 5
+        n_neg: 20
+        margin: 1.0
+        epochs: 150
+        lr: 0.01
+      standardize: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575
+    expert:
+      n_models: 5
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.4
+        input_dropout: 0.2
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.001
+        weight_decay: 5.0e-04
+        batch_size: 64
+        max_epochs: 120
+        loss: pearson
+        loss_weights:
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, hard, contrastive, triplet, metric-learning, supervised-gating, 6head, 3traits, 2env, gmm, sweep, select, train2017, val2018, GY, PH, AD, optimal, drought]
