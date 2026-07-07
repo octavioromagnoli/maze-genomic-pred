@@ -186,7 +186,7 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-
+consigna
 
 # --- Proyecto maze-genomic-pred ---
 # Artefactos pesados / generados: no van al repo (se reproducen o van a wandb Artifacts).
