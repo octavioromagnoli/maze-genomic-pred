@@ -27,6 +27,7 @@ from src.models.moe_gxe_multitask import MoEGxEMultitaskRegressor
 from src.models.moe_gpca_multitask import GKinshipPCAMoEMultitaskRegressor
 from src.models.moe_ldprune_multitask import MoELDPruneMultitaskRegressor
 from src.models.moe_multitask import MixtureOfExpertsMultitaskRegressor
+from src.models.moe_partition_ensemble_multitask import MoEPartitionEnsembleMultitaskRegressor
 from src.models.moe_pls_multitask import MoEPLSMultitaskRegressor
 from src.models.moe_singletask import MixtureOfExpertsSingleTaskRegressor
 from src.models.moe_soft_multitask import SoftMoEMultitaskRegressor
@@ -43,6 +44,7 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "mlp_multitask_tower": MLPMultitaskTowerRegressor,
     "ensemble_multitask": EnsembleMultitaskRegressor,
     "moe_multitask": MixtureOfExpertsMultitaskRegressor,
+    "moe_partition_ensemble_multitask": MoEPartitionEnsembleMultitaskRegressor,
     "moe_gblup_multitask": GBLUPRoutedMoEMultitaskRegressor,
     "moe_gblup_residual_multitask": GBLUPResidualHardMoEMultitaskRegressor,
     "moe_gpca_multitask": GKinshipPCAMoEMultitaskRegressor,

@@ -114,6 +114,77 @@ def expanding_temporal_split(
     return folds
 
 
+def spike_in_split(
+    year,
+    line_id,
+    *,
+    holdout_year: int,
+    train_years: list[int] | None = None,
+    spike_pct: float = 0.0,
+    holdout_frac: float = 0.9,
+    spike_seed: int = 0,
+    enforce: str = "val",
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Spike-in / cold-start del año ``holdout_year`` (Lopez-Cruz).
+
+    Entrena con los ``train_years`` históricos MÁS una fracción ``spike_pct`` de las
+    LÍNEAS del ``holdout_year`` (las "spike-eadas", metidas en train), y valida sobre
+    una fracción FIJA ``holdout_frac`` de las líneas del ``holdout_year`` — el *holdout
+    común* —, disjunta del spike. Sirve para medir cuánta muestra del ciclo objetivo
+    hace falta para rescatar la accuracy cross-cycle (que colapsa sin spike).
+
+    Claves del diseño (para deltas limpios y sin leakage):
+    - El holdout común es el MISMO subconjunto de líneas (las últimas ``holdout_frac``
+      de las líneas del año, barajadas por ``spike_seed``) para CUALQUIER ``spike_pct``.
+      Así el tamaño y la composición del test no cambian entre niveles de spike y los
+      Δ(5%−0%), Δ(10%−0%) son atribuibles solo al spike, no al test.
+    - El spike sale de la fracción COMPLEMENTARIA (las primeras ``1 - holdout_frac``),
+      garantizando spike ∩ holdout = ∅ ⇒ nunca se predice una línea usada en train.
+    - Los niveles de spike están ANIDADOS: el 5% es un subconjunto del 10% (mismo
+      barajado), así el 10% "agrega" líneas al 5% en vez de resortear.
+
+    Agrupa por línea (nunca parte una línea entre train y val, regla 2) y pasa por
+    `enforce_disjoint_lines` como red de seguridad. Devuelve ``[(train_idx, val_idx)]``
+    (un solo fold) para encajar en el loop de `run_evaluation`.
+    """
+    year = np.asarray(year)
+    line_id = np.asarray(line_id)
+    hold_year = int(holdout_year)
+
+    hold_mask = year == hold_year
+    hold_lines = np.unique(line_id[hold_mask])
+    if len(hold_lines) == 0:
+        return []
+    # Barajar las líneas del año holdout de forma reproducible por rep (spike_seed).
+    rng = np.random.default_rng(int(spike_seed))
+    hold_lines = hold_lines[rng.permutation(len(hold_lines))]
+
+    n = len(hold_lines)
+    n_pool = int(round((1.0 - float(holdout_frac)) * n))   # primeras -> pool de spike
+    spike_pool = hold_lines[:n_pool]                       # candidatas a entrar a train
+    holdout = hold_lines[n_pool:]                          # holdout común FIJO (val)
+
+    # Cuántas líneas del pool se spike-ean para este pct (subconjunto anidado del pool).
+    n_spike = min(int(round(float(spike_pct) * n)), n_pool)
+    spike = spike_pool[:n_spike]
+
+    # Train = filas de los años históricos (excluyendo el holdout_year) + filas de las
+    # líneas spike-eadas del holdout_year. Sin train_years => todos los años previos.
+    if train_years is not None:
+        requested = {int(y) for y in train_years}
+        hist_mask = np.isin(year, list(requested)) & (year != hold_year)
+    else:
+        hist_mask = (year < hold_year)
+    spike_row_mask = hold_mask & np.isin(line_id, spike)
+    train_idx = np.flatnonzero(hist_mask | spike_row_mask)
+
+    # Val = filas del holdout_year cuyas líneas están en el holdout común.
+    val_idx = np.flatnonzero(hold_mask & np.isin(line_id, holdout))
+
+    tr, va = enforce_disjoint_lines(train_idx, val_idx, line_id, drop_from=enforce)
+    return [(tr, va)]
+
+
 def final_test_split(year, test_year: int) -> tuple[np.ndarray, np.ndarray]:
     """Separa el año de test final (intocable) del resto (dev)."""
     year = np.asarray(year)

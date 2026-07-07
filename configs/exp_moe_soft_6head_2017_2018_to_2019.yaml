@@ -1,0 +1,77 @@
+# MoE SOFT de 6 CABEZAS: gate APRENDIDO (softmax con temperatura sobre el embedding compartido) en UNA
+# sola red, K=4 expertos que se MEZCLAN (soft), en vez del gating externo PCA+GMM con ruteo HARD top-1 del
+# campeon (moe_multitask). multi_trait_env (GY/PH/AD x optimal/drought = 6 cabezas). El backbone HP es el
+# MISMO que el experto del MoE hard 6-cabezas (exp_moe_hard_6head_...) para AISLAR el efecto soft-vs-hard
+# del ruteo. Train 2017+2018 -> val 2019. Portada = GY_drought.
+# NOTA: el moe_soft es una UNICA red (1 seed); el hard/ensemble son ensembles de 5 seeds (no matcheado en
+# ese eje). Referencia GY_drought 2019: MoE hard 0.407; ensemble sin gating 0.275; GBLUP-drought 0.241.
+
+experiment:
+  name: moe_soft_6head_2017_2018_to_2019
+  description: >
+    MoE soft de 6 cabezas (gate aprendido, mezcla blanda de K=4 expertos), backbone igual al experto del
+    MoE hard 6-cabezas. Train 2017+2018 -> val 2019. Portada = GY_drought. Contraste soft-vs-hard del ruteo.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true       # 3 traits x 2 ambientes = 6 cabezas (una fila por GID x Year)
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought          # portada = GY_drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2019
+  train_years: [2017, 2018]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_soft_multitask
+  params:
+    # --- tronco compartido (mismo bloque que el experto del MoE hard) ---
+    hidden_dims: [128]
+    dropout: 0.2234
+    input_dropout: 0.0327
+    activation: leaky_relu
+    batchnorm: false
+    lr: 0.00101
+    weight_decay: 3.93e-05
+    batch_size: 64
+    max_epochs: 133
+    loss: pearson
+    loss_weights:              # una entrada por cabeza (6); pesos iguales (1.0)
+      GY_optimal: 1.0
+      GY_drought: 1.0
+      PH_optimal: 1.0
+      PH_drought: 1.0
+      AD_optimal: 1.0
+      AD_drought: 1.0
+    patience: null
+    standardize_inputs: true
+    standardize_target: true
+    random_state: 575
+    device: auto
+    # --- soft mixture of experts (gate aprendido, K=4) ---
+    n_experts: 4               # K expertos que el gate mezcla (mismo K que los clusters del hard)
+    gate_tau: 1.0              # temperatura del softmax del gate (>1 = mezcla mas blanda)
+    lb_coef: 0.01              # coef de la load-balancing loss (Switch: K*sum_k f_k*P_k)
+    gate_hidden_dim: null      # null => gate lineal Linear(h, K)
+    expert_hidden_dim: null    # null => cada experto es Linear(h, n_targets)
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: offline
+  tags: [moe, soft, multitask, 6head, 3traits, 2env, train2017-2018, val2019, GY, PH, AD, optimal, drought]

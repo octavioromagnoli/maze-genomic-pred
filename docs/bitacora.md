@@ -1044,3 +1044,61 @@ metodológico consolidado: (1) el **gating por subpoblación genómica** despega
 encima de GBLUP; (2) el **sharing multitarea entre ambientes** (2→6 cabezas) es esencial y regulariza a
 los expertos hambrientos de datos; (3) todo lo que **especializa por ambiente o supervisa el ruteo por
 fenotipo** reorienta hacia el ambiente fácil (óptimo) y pierde en el difícil (sequía). 2020 sigue sellado.
+
+---
+
+## Blindaje del benchmark de 6 fenotipos (2026-07-06) — CORRECCIÓN al veredicto anterior
+
+Antes de llevar el benchmark al informe se testeó su **robustez a la semilla** y la **multiplicidad**. El
+resultado obliga a **corregir el veredicto de arriba**: la afirmación *"GY_drought 2019 ≈ 0.41 es robusto"*
+solo probaba robustez a **HP** (0.407 vs 0.409), todo con **seed 575**. Al variar la semilla (re-sembrando
+`seed` y todos los `random_state`, incluído el del GMM del gating), el número se cae.
+
+- **El MoE hard NO es robusto a la seed.** GY_drought sobre 5 semillas `[575,1,42,2024,7]`:
+  `[0.407, 0.261, 0.215, 0.142, 0.379]` → **media 0.281 ± 0.111** (rango 0.14–0.41). El **0.407 era la mejor
+  de cinco**. Es el modelo de mayor sd casi en todos los fenotipos. Causa: el GMM del gating con `n_init=1`
+  reparticiona la población según la semilla.
+- **El modelo robusto es el ensemble multitarea SIN gating:** GY_drought **0.298 ± 0.016**, la mayor media y
+  la menor sd, y el **único** que le gana a GBLUP con signo estable en sequía. El gating (hard/soft/gxe/pls/
+  contr) **no le gana al ensemble plano** en la portada (0.298 ≥ 0.287 soft ≥ 0.281 hard ≥ …). ⇒ el gating por
+  subpoblación **no aporta señal robusta; aporta fragilidad**. La "ley 1" (el gating es la palanca) era un
+  artefacto de la seed 575.
+- **Sesgo de selección confirmado en varios picos:** GxE "gana" GY_optimal con 0.385 → media 0.240 ± 0.126;
+  el MoE hard "rescata" PH_drought con 0.137 → media 0.038 ± 0.076. No sobreviven al promedio entre semillas.
+- **Lo que SÍ aguanta (sign-estable):** GBLUP **imbatido en AD_drought** (0.317); PLS/contrastivo > GBLUP en
+  PH_optimal; ensemble > GBLUP en GY_drought (~0.30 vs 0.24, modesto pero real).
+- **Multiplicidad:** 25/36 tests vs GBLUP sobreviven BH-FDR 5% — pero es incertidumbre de muestreo a seed
+  fija; la de semilla es aparte y mayor. Un ▲ del punto 575 que en robustez es ○ **no es defendible**.
+
+**Para el informe:** reportar **media ± sd sobre ≥5 semillas**, nunca el punto de una seed; el aporte neuronal
+robusto en sequía lo da el **ensemble sin gating** (no el gating); GBLUP manda en floración. Detalle,
+metodología y tablas completas en [`docs/robustez_benchmark_6pheno.md`](robustez_benchmark_6pheno.md).
+Runners: `scripts/analysis/{benchmark_6pheno,robustez_6pheno,ninit_check}.py`. Config nuevo:
+`configs/exp_moe_soft_6head_2017_2018_to_2019.yaml`.
+
+---
+
+## Test final en 2020 — spike-in / cold-start (2026-07-06)
+
+Cierre del ciclo 2020. Predecir 2020 con solo años históricos **colapsa** para grain yield (cold-start:
+cero overlap de GID + deriva de sequía). Se midió cuánta muestra del propio ciclo hay que inyectar al
+train para rescatarlo (idea Lopez-Cruz), para **los 7 modelos × 6 fenotipos × 3 sets de train (2019 /
+2018-2019 / 2017-2019) × spike 0/+5/+10%**, con **holdout común FIJO del 90% de 2020 (437 líneas)** como
+test para los tres niveles (el tamaño del test no influye en los Δ) y el spike saliendo del 10%
+complementario ⇒ **sin leakage** (spike ∩ holdout = ∅). 3 reps por celda (media ± sd).
+
+- **El spike rescata el colapso en TODOS los modelos/fenotipos.** GY_drought pasa de ~0 (o negativo) a
+  ~0.30-0.43 con solo +5%; el grueso del rescate está en el +5% (5→10% agrega ~+0.07, marginal decreciente).
+- **Para GY, menos historia + spike ≥ más historia + spike** (los años viejos meten deriva cross-cycle).
+  **AD es al revés**: transfiere sin spike y más historia ayuda (AD_drought train 2018-2019 sin spike ~0.48).
+- **Con spike, MoE PLS y Contrastivo superan a GBLUP** (GY_drought train2019 +10%: PLS 0.515 / Contr 0.518
+  / Ensemble 0.496 vs GBLUP 0.427; PH_drought PLS hasta 0.641 vs GBLUP 0.388). Sin spike GBLUP compite,
+  sobre todo en AD.
+- **Cautela:** GY_optimal y PH tienen sd de spike grandes (±0.15-0.25); GY_drought y AD son estables (±0.02-0.06).
+
+Mecánica nueva reusable: cv `spike_in` ([`src/eval/splits.py`](../src/eval/splits.py)`::spike_in_split`,
+guard `assert_no_line_leakage`) + branch en [`src/training/run.py`](../src/training/run.py)`::_build_folds`.
+Runner [`scripts/analysis/test_2020_spike.py`](../scripts/analysis/test_2020_spike.py) (soporta `SHARD="k/N"`
+para data-parallel; se corrió en 8 procesos a 1 hilo por el crash OMP en sandbox y porque las redes chicas
+no escalan con hilos). **Tablas completas (18 tablas, todo lo testeado) en**
+[`docs/test_2020_spike.md`](test_2020_spike.md).

@@ -1,0 +1,91 @@
+# CONFIG BASE del sweep del MoE PARTITION-ENSEMBLE de 6 CABEZAS
+# (moe_partition_ensemble_multitask + multi_trait_env: GY/PH/AD x optimal/drought).
+#
+# MOTIVACION (blindaje 2026-07-06): el MoE hard de UNA particion es fragil a la seed del GMM
+# (GY_drought 2019 varia 0.14-0.41). Este modelo promedia K=5 particiones GMM independientes para
+# matar esa varianza. El sweep (sweep_moe_partens_6head.yaml) pisa model.params.* y optimiza
+# pearson_r_GY (= GY_drought, cover_env). SELECCION honesta: train 2017 -> val 2018 (2019 reporte,
+# 2020 sellado). Pregunta: ¿converge a un valor ALTO robusto o a ~0.29 = nivel del ensemble sin gating?
+#
+# COSTO: cada trial entrena K(5) particiones x (k clusters + fallback) x expert.n_models(3) redes.
+# Por eso el experto usa n_models=3 (no 5): el promedio sobre particiones ya aporta robustez.
+
+experiment:
+  name: moe_partens_6head_2017_to_2018
+  description: >
+    MoE partition-ensemble (promedio de K=5 gatings GMM) con expertos multitask de 6 cabezas. Config
+    base del sweep: seleccion honesta train 2017 -> val 2018, portada = GY_drought. 2019 reporte, 2020 sellado.
+
+seed: 575
+
+data:
+  geno_csv: data/Geno_data.csv
+  pheno_csv: data/Pheno_data.csv
+  multi_trait_env: true       # 6 cabezas (GY/PH/AD x optimal/drought)
+  targets: [GY, PH, AD]
+  envs: [optimal, drought]
+  cover_env: drought
+
+cv:
+  scheme: fixed_temporal
+  val_year: 2018
+  train_years: [2017]
+  holdout_test_year: 2020
+  enforce_disjoint_lines: true
+
+model:
+  name: moe_partition_ensemble_multitask
+  params:
+    n_partitions: 5            # K particiones GMM a promediar (la palanca de robustez)
+    partition_seed_step: 101   # gating.random_state_k = 575 + k*101 (semillas GMM bien separadas)
+    gating:
+      pca_n_components: 100
+      standardize: true
+      whiten: true
+      k: 4
+      covariance_type: full
+      reg_covar: 1.0e-6
+      n_init: 1
+      min_cluster_size: 250
+      global_fallback: true
+      random_state: 575        # base; cada particion la corre por partition_seed_step
+    expert:
+      n_models: 3              # reducido de 5: el ensemble de particiones ya regulariza
+      seed_step: 1000
+      inner:
+        hidden_dims: [128]
+        dropout: 0.4
+        input_dropout: 0.2
+        activation: leaky_relu
+        batchnorm: false
+        lr: 0.001
+        weight_decay: 5.0e-04
+        batch_size: 64
+        max_epochs: 120
+        loss: pearson
+        loss_weights:            # una entrada por cabeza (6); pesos iguales (las auxiliares regularizan)
+          GY_optimal: 1.0
+          GY_drought: 1.0
+          PH_optimal: 1.0
+          PH_drought: 1.0
+          AD_optimal: 1.0
+          AD_drought: 1.0
+        patience: null
+        standardize_inputs: true
+        standardize_target: true
+        random_state: 575
+        device: auto
+
+bootstrap:
+  enabled: true
+  n_boot: 1000
+  alpha: 0.05
+
+artifacts:
+  save_model: false
+
+wandb:
+  project: maze-genomic-pred
+  entity: null
+  mode: online
+  tags: [moe, partition_ensemble, multitask, 6head, pca, gmm, robustez, sweep, select, train2017, val2018, GY, PH, AD]

@@ -18,6 +18,7 @@ from src.eval.splits import (
     assert_no_line_leakage,
     expanding_temporal_split,
     fixed_temporal_split,
+    spike_in_split,
 )
 from src.models.registry import build_model
 
@@ -92,9 +93,23 @@ def _build_folds(cv_cfg: dict[str, Any], year, line_id) -> list:
             folds += [(tr, va, False) for tr, va in fs]
         return folds
 
+    if scheme == "spike_in":
+        # Cold-start / spike-in del año holdout: train = históricos + spike% del holdout,
+        # val = holdout común FIJO (ver spike_in_split). Un único fold de scoring.
+        fs = spike_in_split(
+            year, line_id,
+            holdout_year=cv_cfg["holdout_year"],
+            train_years=cv_cfg.get("train_years"),
+            spike_pct=float(cv_cfg.get("spike_pct", 0.0)),
+            holdout_frac=float(cv_cfg.get("holdout_frac", 0.9)),
+            spike_seed=int(cv_cfg.get("spike_seed", 0)),
+            enforce=enforce,
+        )
+        return [(tr, va, True) for tr, va in fs]
+
     raise ValueError(
         f"cv.scheme desconocido: {scheme!r}. Soportados: "
-        "'fixed_temporal', 'expanding_temporal'."
+        "'fixed_temporal', 'expanding_temporal', 'spike_in'."
     )
 
 

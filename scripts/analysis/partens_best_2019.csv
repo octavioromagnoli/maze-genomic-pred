@@ -1,0 +1,7 @@
+pheno,partens_r,partens_lo,partens_hi,gblup_r,delta,sweep_run,val2018_select
+GY_optimal,0.2163,0.15,0.28,0.3145,-0.0982,vgwxnu7z,0.2538
+GY_drought,0.3095,0.24,0.37,0.2413,0.0683,vgwxnu7z,0.2538
+PH_optimal,0.0606,-0.01,0.13,0.0714,-0.0108,vgwxnu7z,0.2538
+PH_drought,-0.1081,-0.19,-0.03,-0.0478,-0.0602,vgwxnu7z,0.2538
+AD_optimal,0.3207,0.25,0.38,0.2981,0.0226,vgwxnu7z,0.2538
+AD_drought,0.2878,0.23,0.34,0.317,-0.0292,vgwxnu7z,0.2538
