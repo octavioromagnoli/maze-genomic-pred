@@ -1,26 +1,17 @@
-"""Mixture of Experts multitask: gating PCA+GMM, un ensemble multitask por cluster.
+"""Mixture of experts multitask con ruteo hard: gating PCA+GMM y un ensemble por cluster.
 
-Idea (mixture of experts con ruteo *hard*):
+El gating reduce los SNPs con PCA y clusteriza el espacio latente con una
+GaussianMixture; PCA y GMM se ajustan con el train del fold. Cada cluster tiene su
+propio experto (un EnsembleMultitaskRegressor de varias seeds, tronco compartido y
+una cabeza por trait/ambiente) entrenado sobre los SNPs completos del cluster: PCA y
+GMM solo rutean, no son features del experto. En inferencia cada muestra va (argmax
+de responsabilidad, hard top-1) al experto de su cluster.
 
-1. **Gating (train-only, regla 1).** Se reduce la dimensionalidad de los SNPs con PCA y se
-   clusteriza el espacio latente con un `GaussianMixture` (GMM). PCA y GMM se ajustan SOLO con el
-   train del fold; en inferencia se proyecta val/test sobre los MISMOS componentes y GMM.
-2. **Experts.** Un `EnsembleMultitaskRegressor` (varias seeds, tronco compartido + una cabeza por
-   trait/ambiente) por cluster, entrenado sobre los **SNPs completos** del subconjunto de ese
-   cluster (PCA/GMM se usan solo para rutear, no como features del expert).
-3. **Predicción.** Se calcula la responsabilidad de cada muestra bajo el GMM y se rutea (argmax,
-   *hard top-1*) al expert del cluster de mayor responsabilidad.
-
-Riesgo del régimen p≫n: partir n≈2319 en K clusters deja cada expert con ~500–800 muestras. Por
-eso hay dos salvaguardas: `min_cluster_size` (un cluster con menos filas NO entrena expert propio)
-y un **global fallback expert** entrenado sobre TODO el train, que atiende los clusters chicos o
-vacíos en inferencia (garantiza que siempre haya predicción). El baseline honesto a batir no es
-solo GBLUP sino la red multitask **global** (mismo `expert.inner`, sin gating).
-
-Se enchufa en `run_multitask_evaluation` igual que `mlp_multitask`/`ensemble_multitask`
-(interfaz ``fit(X, Y, Y_mask)`` / ``predict(X) -> (n, T)``); el dispatch de `scripts/train.py`
-lo incluye por nombre. Reusa `SNPPreprocessor`/`PCAReducer` (gating) y `EnsembleMultitaskRegressor`
-(experts) sin reimplementar nada.
+Partir n en K clusters deja poca muestra por experto, así que hay dos salvaguardas:
+min_cluster_size (un cluster chico no entrena experto propio) y un experto global de
+respaldo, entrenado sobre todo el train, que atiende los clusters chicos o vacíos.
+El baseline a batir no es solo GBLUP sino la red multitask global (mismo experto sin
+gating).
 """
 from __future__ import annotations
 
@@ -33,41 +24,36 @@ from src.data.preprocess import PCAReducer, PreprocChain, SNPPreprocessor
 from src.models.base import BaseModel
 from src.models.ensemble_multitask import EnsembleMultitaskRegressor
 
-# Defaults del gating (PCA + GMM). Los pisa `model.params.gating.*` del config/sweep.
 _GATING_DEFAULTS: dict[str, Any] = {
-    "pca_n_components": 50,       # dims retenidas por PCA (HP del sweep)
-    "standardize": True,          # z-score por-SNP antes del PCA (train-only)
-    "whiten": True,               # componentes a varianza unitaria (mejor condicionado para GMM 'full')
-    "k": 3,                       # nº de clusters GMM (HP del sweep)
-    "covariance_type": "full",    # full | diag | tied | spherical
-    "reg_covar": 1e-6,            # estabilidad numérica del GMM
-    "n_init": 1,                  # reinicios del EM (mayor => más estable, más lento)
-    "min_cluster_size": 150,      # cluster con menos filas => sin expert propio (usa fallback)
-    "global_fallback": True,      # expert extra sobre TODO el train, para clusters chicos/vacíos
+    "pca_n_components": 50,
+    "standardize": True,
+    "whiten": True,
+    "k": 3,
+    "covariance_type": "full",
+    "reg_covar": 1e-6,
+    "n_init": 1,
+    "min_cluster_size": 150,
+    "global_fallback": True,
     "random_state": 575,
 }
 
 
 class MixtureOfExpertsMultitaskRegressor(BaseModel):
-    """Mixture of experts multitask con gating PCA+GMM y ruteo *hard top-1*.
+    """Mixture of experts multitask con gating PCA+GMM y ruteo hard top-1.
 
-    `params` (sub-dict ``model.params`` del config):
-        gating : dict con los defaults de ``_GATING_DEFAULTS`` (PCA + GMM + salvaguardas).
-        expert : dict de params de `EnsembleMultitaskRegressor` (``n_models``, ``seed_step`` e
-                 ``inner`` con la arquitectura/loss del `MLPMultitaskRegressor`). Es lo que
-                 comparten TODOS los experts (uno por cluster + el fallback).
+    params.gating trae los defaults de _GATING_DEFAULTS (PCA + GMM + salvaguardas) y
+    params.expert los del EnsembleMultitaskRegressor (n_models, seed_step, inner con
+    la arquitectura y la loss), compartidos por todos los expertos y el fallback.
 
-    `fit(X, Y, Y_mask)` recibe ``Y``/``Y_mask`` ``(n, T)``; los nombres de las columnas llegan por
-    `set_fit_context(target_names=...)` y se propagan a cada expert. `predict(X)` devuelve ``(n, T)``.
+    fit(X, Y, Y_mask) recibe Y/Y_mask de shape (n, T); los nombres de columna llegan
+    por set_fit_context(target_names=...). predict(X) devuelve (n, T).
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.gating_params: dict[str, Any] = {**_GATING_DEFAULTS, **dict(self.params.get("gating", {}) or {})}
-        # Params del EnsembleMultitaskRegressor por cluster (arquitectura/loss compartidos).
         self.expert_params: dict[str, Any] = dict(self.params.get("expert", {}) or {})
 
-    # --- Construcción de piezas --------------------------------------------
 
     def _build_gating(self) -> Any:
         """Cadena de featurización del gating (train-only): [z-score] -> PCA."""
@@ -79,7 +65,7 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
             PCAReducer(
                 n_components=int(g["pca_n_components"]),
                 whiten=bool(g["whiten"]),
-                svd_solver="full",              # determinista (regla de reproducibilidad)
+                svd_solver="full",
                 random_state=int(g["random_state"]),
             )
         )
@@ -89,11 +75,10 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
         return EnsembleMultitaskRegressor({"params": dict(self.expert_params)})
 
     def _fit_gating(self, X: np.ndarray, Y: np.ndarray, Y_mask: np.ndarray) -> np.ndarray:
-        """Ajusta la featurización del gating (train-only) y devuelve las features ``Z`` para el GMM.
+        """Ajusta la featurización del gating y devuelve las features Z para el GMM.
 
-        Default no supervisado (PCA): ignora ``Y``/``Y_mask``. Las variantes supervisadas
-        (`moe_pls_multitask`, `moe_contrastive_multitask`) lo overridean para orientar el espacio de
-        ruteo por el fenotipo o por el parentesco. Guarda la cadena ajustada en ``self.pre_``.
+        El default (PCA) es no supervisado e ignora Y/Y_mask. Las variantes
+        supervisadas (moe_pls_multitask) lo overridean. Guarda la cadena en self.pre_.
         """
         self.pre_ = self._build_gating()
         return self.pre_.fit_transform(X)
@@ -103,7 +88,6 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
         p = np.asarray(p, dtype=float)
         return p.reshape(-1, 1) if p.ndim == 1 else p
 
-    # --- Interfaz BaseModel -------------------------------------------------
 
     def fit(self, X: np.ndarray, Y: np.ndarray, Y_mask: np.ndarray | None = None) -> "MixtureOfExpertsMultitaskRegressor":
         from sklearn.mixture import GaussianMixture
@@ -122,8 +106,7 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
         k = int(g["k"])
         self.k_ = k
 
-        # --- Gating: featurización (PCA por default) + GMM, train-only (regla 1) ---
-        Z = self._fit_gating(X, Y, Y_mask)   # hook: las variantes supervisadas (PLS, contrastivo) lo overridean
+        Z = self._fit_gating(X, Y, Y_mask)
         self.gmm_ = GaussianMixture(
             n_components=k,
             covariance_type=str(g["covariance_type"]),
@@ -132,14 +115,13 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
             random_state=int(g["random_state"]),
         )
         self.gmm_.fit(Z)
-        labels = self.gmm_.predict(Z)  # asignación hard por argmax de responsabilidad
+        labels = self.gmm_.predict(Z)
 
         year = ctx.get("year")
         line_id = ctx.get("line_id")
         target_names = ctx.get("target_names")
         min_size = int(g["min_cluster_size"])
 
-        # --- Un expert (ensemble) por cluster con suficientes filas -----------
         self.experts_: dict[int, EnsembleMultitaskRegressor] = {}
         self.cluster_sizes_: dict[int, int] = {}
         for c in range(k):
@@ -147,7 +129,7 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
             n_c = int(mask.sum())
             self.cluster_sizes_[c] = n_c
             if n_c < min_size:
-                continue  # cluster chico => sin expert propio; lo atiende el fallback
+                continue
             expert = self._make_expert()
             expert.set_fit_context(
                 year=None if year is None else np.asarray(year)[mask],
@@ -157,9 +139,6 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
             expert.fit(X[mask], Y[mask], Y_mask[mask])
             self.experts_[c] = expert
 
-        # --- Global fallback: sobre TODO el train (clusters chicos/vacíos) ----
-        # Se entrena si el config lo pide o si algún cluster quedó sin expert (garantiza
-        # que toda muestra ruteada tenga a quién ir en inferencia).
         self.fallback_: EnsembleMultitaskRegressor | None = None
         if bool(g["global_fallback"]) or (len(self.experts_) < k):
             fb = self._make_expert()
@@ -167,7 +146,6 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
             fb.fit(X, Y, Y_mask)
             self.fallback_ = fb
 
-        # Learning curve representativa (primer expert, o el fallback) para que run.py loguee algo.
         first = next(iter(self.experts_.values()), None) or self.fallback_
         self.history_ = list(getattr(first, "history_", []) or []) if first is not None else []
         return self
@@ -177,7 +155,7 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
             raise RuntimeError("MixtureOfExpertsMultitaskRegressor.predict llamado antes de fit.")
         X = np.asarray(X, dtype=np.float64)
         Z = self.pre_.transform(X)
-        clusters = self.gmm_.predict(Z)  # cluster de mayor responsabilidad por muestra
+        clusters = self.gmm_.predict(Z)
         out = np.empty((X.shape[0], self.n_targets_), dtype=float)
         for c in np.unique(clusters):
             rows = np.flatnonzero(clusters == c)
@@ -201,7 +179,7 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
         }
         for c, s in self.cluster_sizes_.items():
             params[f"cluster_size_{c}"] = int(s)
-        gfp = getattr(self.pre_, "get_fitted_params", None)  # pca_n_components + var explicada
+        gfp = getattr(self.pre_, "get_fitted_params", None)
         if callable(gfp):
             params.update(gfp())
         n_params = sum(int(getattr(e, "get_fitted_params", dict)().get("n_params", 0) or 0)
@@ -211,14 +189,13 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
         params["n_params"] = int(n_params)
         return params
 
-    # --- Persistencia (override torch: cada expert es un ensemble de redes) --
 
     def save(self, path: str | Path) -> Path:
-        """Guarda cada expert en su propio subdirectorio (evita colisión de ``submodel_i.pt``)
+        """Guarda cada expert en su propio subdirectorio (evita colisión de submodel_i.pt)
         + un manifiesto joblib con el gating (PCA/GMM, sklearn) y el ruteo.
 
-        `save_model_artifact` sube el directorio entero, así que al bajar el artifact los
-        ``expert_<c>/`` quedan junto al manifiesto y `load` los reencuentra.
+        save_model_artifact sube el directorio entero, así que al bajar el artifact los
+        expert_<c>/ quedan junto al manifiesto y load los reencuentra.
         """
         import joblib
 
@@ -245,8 +222,8 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
                 "config": self.config,
                 "gating_params": self.gating_params,
                 "expert_params": self.expert_params,
-                "pre_": self.pre_,          # SNPPreprocessor/PCAReducer/PreprocChain (numpy/sklearn)
-                "gmm_": self.gmm_,          # GaussianMixture (sklearn)
+                "pre_": self.pre_,
+                "gmm_": self.gmm_,
                 "k_": self.k_,
                 "n_targets_": self.n_targets_,
                 "cluster_sizes_": self.cluster_sizes_,

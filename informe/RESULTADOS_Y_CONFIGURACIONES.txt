@@ -1,0 +1,278 @@
+================================================================================
+REGISTRO DE RESULTADOS Y CONFIGURACIONES — TP Predicción genómica maíz (GY)
+Informe IEEE: "Predicción genómica del rendimiento en maíz bajo deriva temporal:
+un Mixture-of-Experts ruteado por subpoblación"
+Rama: organizacion-pre-informe-A   |   Última actualización: 2026-07-08
+--------------------------------------------------------------------------------
+Objetivo de este archivo: poder retomar el trabajo SIN refittear nada, con los
+números exactos, las configuraciones usadas y la receta de reproducción.
+Todos los números salen de reproducir los CONFIGS (cacheado), no de copiar a mano.
+================================================================================
+
+
+================================================================================
+0. DECISIONES DE FRAMING (cerradas con el usuario — no re-litigar)
+================================================================================
+- Los números del benchmark son la VERSIÓN DE PUNTO PRE-ROBUSTEZ, seed 575
+  (la "Version 2" del artifact "benchmark 6 fenotipos vs GBLUP"). NO se usa la
+  versión de robustez-a-seeds (media±sd sobre 5 seeds). El blindaje de seed queda
+  EXCLUIDO del informe por decisión explícita.
+- Framing: MoE hard es el modelo titular (GY_drought val 2019 = 0.407).
+- El modelo "Contrastivo" queda EXCLUIDO del informe (figuras y texto).
+  Modelos presentados: GBLUP, Red multitarea (=Ensemble sin gating),
+  MoE hard, MoE soft, MoE GxE, MoE PLS.
+- Test 2020: se entrena con los 2 AÑOS MÁS PRÓXIMOS (2018+2019), no todo el dev.
+- AE/β-VAE como espacio de gating: evaluado en otra rama, sin resultados
+  prometedores → no se continuó (se menciona pero no se reproduce).
+- Métricas de portada: Pearson (principal) + matching20 (utilidad de selección).
+  R² y RMSE NO se reportan (la pérdida Pearson deja la escala sin calibrar).
+
+
+================================================================================
+1. DATOS Y EDA (todo sobre dev 2017-2019; 2020 sellado hasta el cierre)
+================================================================================
+- Dataset: López-Cruz et al. 2021 (CIMMYT). 3528 líneas x 4612 SNPs.
+  Genotipo binario {0,1}, sin faltantes. Fenotipo <0.07% celdas ausentes
+  (se descartan por bloque, no se imputa el objetivo).
+- Cada GID aparece en UN solo año (ninguna línea cruza campañas).
+- Splits (fixed_temporal): train 2017-2018 = 2320 líneas ; val 2019 = 722 ;
+  test 2020 = 486 (holdout). Dev total 2017-2019 = 3042.
+- QC SNPs: 0 monomórficos. MAF mínima 0.033. Filtro MAF>=0.05 (train-only)
+  descarta 7 marcadores -> quedan 4605.
+- Medias fenotipo: GY optimal ~7.0 vs drought ~3.0 ; PH 246 vs 211.
+- Correlaciones intra-ambiente (dev):
+    GY<->PH: 0.64 (opt) / 0.31 (dro)
+    GY<->AD: 0.31 (opt) / -0.04 (dro)
+    PH<->AD: 0.31 (opt) / 0.10 (dro)
+- GxE (clave): r(GY_optimal, GY_drought) = 0.14  (PH=0.51, AD=0.62).
+- PCA varianza: PC1 6.3%, PC2 5.1%, PC3 4.0%, 10 PCs ~31% (difusa).
+- Drift temporal (CV-AUC logística sobre PCs):
+    2017 vs 2018 = 0.951 (n=2320)
+    2018 vs 2019 = 0.926 (n=2141)
+    2017 vs 2019 = 0.976 (n=1623)
+- Parentesco: 0 clones exactos (3042 perfiles únicos). NN-IBS mediana 0.88;
+  25% de líneas con vecino IBS>0.90. 59 pares casi-clones (IBS>0.99) cross-año;
+  16 líneas (0.5%) con casi-clon en otro año (train/val disjuntos pero emparentados).
+
+
+================================================================================
+2. CONFIGURACIONES DE MODELOS (val 2019, seed 575)
+================================================================================
+HP compartido de los EXPERTOS / redes multitarea (ganador sweep 87qyjrcr,
+selección val 2018; run ganador = u1kgstvr):
+    hidden_dims        [128]
+    dropout            0.2234
+    input_dropout      0.0327
+    activation         leaky_relu
+    batchnorm          false
+    lr                 0.00101
+    weight_decay       3.93e-05
+    batch_size         64
+    max_epochs         133
+    loss               pearson   (1 - r)
+    n_models           5         (ensemble de seeds; seed_step 1000)
+    standardize_inputs/target: true
+    random_state       575
+
+GATING del MoE hard (PCA + GMM):
+    pca_n_components    100  (standardize=true, whiten=true)
+    GMM k              4     (covariance_type=full, reg_covar=1e-6, n_init=1)
+    min_cluster_size   250   (cluster chico NO entrena experto propio)
+    global_fallback    true  (experto global de respaldo)
+    random_state       575
+  -> En el fold de reporte los clusters quedan 192/465/1265/398 líneas;
+     el de 192 cae bajo min_cluster_size => 3 expertos + fallback.
+  Los EXPERTOS ven los SNPs COMPLETOS; PCA/GMM solo rutean.
+
+Variantes de gating (mismo backbone/HP, cambia el espacio de ruteo):
+  - MoE soft : gate suave (mezcla ponderada por responsabilidades del GMM, k=4).
+  - MoE GxE  : concatena PCA con el ambiente (one-hot x env_weight) y agrupa
+               pares (línea, ambiente); ruteo dual por ambiente.
+  - MoE PLS  : PLS supervisado (pls_n_components=30) en vez de PCA; maximiza
+               Cov(Xw, Yc).
+
+CONFIG FILES (carpeta configs/):
+  GBLUP drought .............. exp_gblup_2017_2018_to_2019_drought.yaml
+  GBLUP optimal .............. exp_gblup_2017_2018_to_2019.yaml
+  Red multitarea (Ensemble) .. exp_ensemble_6head_GY_2017_2018_to_2019.yaml
+  MoE hard ................... exp_moe_hard_6head_2017_2018_to_2019.yaml
+  MoE soft ................... exp_moe_soft_multienv_confirm_2019.yaml
+  MoE GxE .................... exp_moe_gxe_6head_2017_2018_to_2019.yaml
+  MoE PLS .................... exp_moe_pls_6head_2017_2018_to_2019.yaml
+  (Contrastivo, EXCLUIDO) .... exp_moe_contrastive_6head_2017_2018_to_2019.yaml
+  XGBoost (2000 árboles) ..... exp_xgboost_2017_2018_to_2019_2000fixed.yaml
+  XGBoost (early stopping) ... exp_xgboost_2017_2018_to_2019.yaml
+  MLP a secas ................ exp_mlp_2017_2018_to_2019.yaml
+  PCA -> GBLUP (red. dim) .... exp_pca_gblup_2017_2018_to_2019.yaml
+
+Todos los MoE/Ensemble usan data.multi_trait_env: true, targets [GY,PH,AD],
+envs [optimal,drought], cover_env: drought (6 cabezas; una corrida predice las 6).
+
+
+================================================================================
+3. RESULTADOS EN VALIDACIÓN 2019 (Pearson [IC95%] + matching20)
+   IC95% = bootstrap cluster-línea (n_boot=1000/2000). azar matching20 = 0.20
+================================================================================
+GY_DROUGHT (portada, n=721):
+  Modelo           Pearson  [IC95%]           matching20
+  MoE hard         0.407    [0.344, 0.470]    0.521   <- mejor
+  MoE soft         0.291    [0.220, 0.360]    0.403
+  Red multitarea   0.275    [0.201, 0.340]    0.368
+  GBLUP            0.241    [0.172, 0.309]    0.354
+  MoE PLS          0.160    [0.094, 0.228]    0.292
+  MoE GxE          0.145    [0.070, 0.217]    0.250
+  (Contrastivo     0.295    [0.230, 0.360])   -- excluido
+
+GY_OPTIMAL (n=722):
+  Modelo           Pearson  [IC95%]           matching20
+  MoE GxE          0.385    [0.324, 0.444]    0.403   <- mejor Pearson
+  MoE PLS          0.350    [0.279, 0.405]    0.431   <- mejor m20
+  Red multitarea   0.318    [0.250, 0.388]    0.389
+  GBLUP            0.315    [0.247, 0.380]    0.396
+  MoE soft         0.279    [0.210, 0.346]    0.368
+  MoE hard         0.216    [0.140, 0.284]    0.319
+  (Contrastivo     0.248    [0.179, 0.315])   -- excluido
+
+BASELINES DE CONTRASTE (GY optimal, val 2019):
+  XGBoost 2000 árboles ...... 0.216   (early stopping subajusta: 0.097)
+  MLP a secas ............... 0.291
+  PCA-512 -> GBLUP .......... 0.299   (ninguna dim supera a GBLUP 0.315;
+                                       la reducción lineal no aporta)
+
+SIGNIFICANCIA (bootstrap PAREADO cluster-línea, GY_drought 2019):
+  MoE hard vs GBLUP (6-cab, 0.407 vs 0.241): +0.166, IC95% del Δ no cruza 0 (sig).
+  Ablación con el MoE de 2 cabezas (0.369, Fase 7):
+    MoE(2cab) vs GBLUP ......... +0.127  [+0.078, +0.175]  *
+    Ensemble  vs GBLUP ......... +0.066  [+0.028, +0.103]  *
+    MoE(2cab) vs Ensemble ...... +0.061  [+0.015, +0.106]  *  (el gating aporta señal
+                                                               por encima de ensamblar)
+  Sweep dedicado del 6-cabezas (bestsweep) confirma: 0.4085 ≈ 0.407 (no supera el techo).
+
+
+================================================================================
+4. RESULTADOS EN TEST 2020 (cierre con spike-in)
+   Train = 2018+2019 (2 años más próximos). Holdout 90% de las 486 líneas de 2020.
+   spike-in = % de líneas de 2020 fenotipadas metidas al train. Media de 3 reps
+   (seeds 1, 42, 2024); spike 0% es determinista (1 rep). n_held: 486/462/437.
+================================================================================
+GY_DROUGHT (Pearson medio):
+  Modelo           0%       5%       10%
+  MoE PLS         -0.059    0.404    0.503   <- mejor rescate
+  MoE GxE         -0.038    0.254    0.493
+  Red multitarea  -0.047    0.316    0.453
+  MoE soft        -0.109    0.316    0.452
+  MoE hard        -0.076    0.254    0.370
+  GBLUP           -0.143    0.190    0.338   <- peor
+
+GY_OPTIMAL (Pearson medio):
+  Modelo           0%       5%       10%
+  GBLUP            0.159    0.380    0.501
+  Red multitarea   0.077    0.395    0.484
+  MoE hard         0.138    0.296    0.511
+  MoE soft         0.103    0.432    0.527
+  MoE GxE          0.218    0.381    0.516
+  MoE PLS          0.149    0.418    0.524
+
+Lectura: sin spike TODOS colapsan (Pearson <=0). Con 5% se da vuelta el signo y
+la familia MoE rescata mejor que GBLUP en sequía; con 10% MoE PLS/GxE ~0.50 vs
+GBLUP 0.34. El grueso del rescate está en el primer 5% (marginal decreciente).
+En óptimo el rescate es más parejo y GBLUP se mantiene competitivo.
+(Nota de corridas previas, no re-corridas: con MENOS años de dev + spike el rescate
+es mayor — train 2019 solo + 10% ~0.43-0.52 según modelo — porque los años viejos
+meten deriva.)
+
+
+================================================================================
+5. ROBUSTEZ AL RUIDO (flip Bernoulli de SNPs, GY_drought, media 5 realizaciones)
+================================================================================
+INFERENCIA (fit limpio, val corrupto a cada eps). Pearson por eps:
+  eps ->        0.00   0.01   0.02   0.05   0.10   0.20   retención@0.10
+  MoE hard      0.407  0.407  0.399  0.387  0.352  0.274    86%  <- más robusto (absoluto)
+  MoE soft      0.291  0.289  0.282  0.265  0.235  0.173    81%
+  Red multit.   0.275  0.271  0.267  0.246  0.210  0.155    76%
+  GBLUP         0.241  0.243  0.238  0.242  0.222  0.179    92%  (plano pero bajo)
+  MoE GxE       0.145  0.145  0.140  0.124  0.110  0.045    76%
+  MoE PLS       0.160  0.162  0.140  0.111  0.068  0.154    43%  <- frágil (gating superv.)
+TRAIN-NOISE (fit con SNPs corruptos, val limpio): NO ayuda (MoE hard 0.407->~0.31).
+La robustez del MoE viene de su regularización (dropout+multitarea), no de augmentation.
+
+
+================================================================================
+6. ALTERNATIVAS QUE NO FUNCIONARON (todas dev, GY_drought 2019)
+================================================================================
+  Predecir residuo de GBLUP (moe_gblup_residual) ... 0.323  (< MoE hard 0.407; descomponer cuesta señal)
+  Expertos single-task (por ambiente) .............. 0.229  (colapsa; optimal 0.004)
+  LD pruning antes del ruteo ....................... 0.219 (ventana) / 0.172 (global)
+  Stacking meta sobre las 6 salidas ................ 0.269  (< cabeza focal 0.297)
+  MoE soft (ablandar ruteo) ........................ 0.291  (< hard 0.407; diluye)
+  AE / beta-VAE como espacio de gating ............. otra rama, sin resultados prometedores
+  2 vs 6 cabezas CON gating ........................ 0.369 -> 0.407 (ayuda)
+  2 vs 6 cabezas SIN gating (multitask plano) ...... 0.312 -> 0.275 (+PH+AD diluye)
+
+
+================================================================================
+7. RECETA DE REPRODUCCIÓN
+================================================================================
+ENTORNO:
+  conda env `tpfia`. Correr SIEMPRE con estos flags (si no, crash OMP en sandbox):
+    PYTHONPATH="$PWD" OMP_NUM_THREADS=1 KMP_DUPLICATE_LIB_OK=TRUE KMP_INIT_AT_FORK=FALSE \
+      conda run -n tpfia --no-capture-output python -u <script>
+  (Para jobs largos usar `screen`, NO nohup — no sobrevive a las transiciones de sesión.)
+
+CACHÉ: outputs/eval_cache/ (indexado por hash de config; ~386 entradas).
+  Los resultados de val 2019 están cacheados => reproducir NO refittea (cache hit).
+  El test 2020 (train 2018+2019) NO estaba cacheado por spike_closure; su CSV ya está
+  guardado (ver abajo), así que tampoco hace falta re-correr.
+
+SCRIPTS (todos corren desde la raíz del repo):
+  VAL 2019 (Pearson + IC, tabla + fig2, cacheado):
+    scripts/analysis/report_figs/fig_model_comparison.py
+  MATCHING20 val 2019 (los 6 modelos, ambos ambientes; lee del per_fold cacheado):
+    scripts/analysis/report_figs/repro_matching20_val2019.py
+  TEST 2020 spike-in train 2018+2019 (6 modelos, ambos ambientes; ~40-90 min si se re-corre):
+    scripts/analysis/report_figs/repro_test2020_spike_train1819.py
+      -> escribe experiments/figs/report/test2020_spike_2018_2019.csv (incremental, resumible)
+  FIGURAS del informe (val2019 + ruido, SIN contrastivo; recorta diagrama; copia EDA):
+    scripts/analysis/report_figs/build_report_figs_val2019_noise.py
+  FIGURA test 2020 (2 paneles líneas: dro | opt):
+    scripts/analysis/report_figs/build_fig_test2020_lines.py
+  FIGURA test 2020 alternativa (3 paneles forest 0%|5%|10%, sugerencia compañero; NO en el .tex):
+    scripts/analysis/report_figs/build_fig_test2020_panels.py
+  RUIDO (fig4/fig5):        scripts/analysis/report_figs/noise_analysis.py
+  EDA PCA 3D drift (fig1):  scripts/analysis/report_figs/fig_eda_pca3d.py
+  Clusters MoE (fig3):      scripts/analysis/report_figs/fig_moe_clusters.py
+
+CSVs DE SALIDA (números crudos, ya generados):
+  experiments/figs/report/fig2_model_comparison.csv ...... val 2019 Pearson+IC (incluye contrastivo)
+  experiments/figs/report/fig4_noise_inference.csv ....... ruido inferencia por eps
+  experiments/figs/report/test2020_spike_2018_2019.csv ... test 2020 por (modelo,head,spike,rep)
+  figuras_informe/fig1_drift_auc.csv ..................... AUC de drift
+  (OJO bug pandas: usar df["head"], NO df.head — colisiona con el método.)
+
+HARNESS REUTILIZABLE (no reimplementar):
+  src/eval/spike.py  -> spike_closure(config, train_years=..., spike_fracs=..., reps=..., target_head=...)
+  src/eval/noise.py  -> noise_curve(...) + helpers _build_arrays/_fit/_predict_heads/_pearson_head
+  src/eval/nb_eval.py-> make_evaluators / make_multitask_evaluator (cacheados)
+  Loader: src/data/loader.py :: to_modeling_arrays_multi_trait_env(targets, envs)
+
+
+================================================================================
+8. ENTREGABLE (informe)
+================================================================================
+  informe/informe.tex ............ informe IEEE (clase IEEEtran conference, ~6-7 pág)
+  informe_overleaf.zip (raíz) .... paquete para subir a Overleaf (New Project > Upload)
+  informe/figs/:
+    fig_eda_drift.png ............ PCA 3D drift por campaña (fig1)
+    fig_moe_diagram.png .......... diagrama del MoE (recortado; hecho por el equipo)
+    fig_val2019.png .............. comparativa val 2019 (Pearson±IC, 6 modelos, 2 ambientes)
+    fig_test2020.png ............. test 2020 líneas (dro|opt, spike 0/5/10)
+    fig_noise.png ................ robustez al ruido GY sequía
+    fig_test2020_panels.png ...... test 2020, 3 paneles forest (NO referenciada en el .tex aún)
+  Referencias: [1] López-Cruz 2021, [2] Puigcerver 2023 (soft MoE), [3] VanRaden 2008,
+    [4] Murphy 2022, [5] Bishop&Bishop 2024, [6] Price et al. 2006 (PCA/estructura poblacional),
+    [7] Chen&Guestrin 2016 (XGBoost), [8] Paszke 2019 (PyTorch), [9] Pedregosa 2011 (sklearn).
+  Nota: si babel falla en Overleaf, sacar la opción `es-nodecimaldot` de la línea 9.
+  Autores: Octavio Romagnoli y Santino Cardelli (Universidad de San Andrés).
+
+Doc largo del proyecto (fases, decisiones, más detalle): docs/bitacora.md
+================================================================================

@@ -23,12 +23,7 @@ from src.models.registry import build_model
 
 LogFn = Callable[[dict[str, Any]], None]
 
-# Métricas a las que se les calcula IC por bootstrap (mismo resample para todas).
-# matching20 = coincidence_index al top-20% (frac=0.2, higher_is_better por defecto:
-# GY más alto = mejor línea); el bootstrap cluster a nivel línea le da su IC.
 _CI_METRICS = {"pearson_r": pearson_r, "rmse": rmse, "r2": r2, "matching20": coincidence_index}
-# Bookkeeping que NO entra al resumen; los bordes _lo/_hi tampoco (se setean
-# aparte con nombres limpios). Todo otro escalar numérico sí se resume.
 _SUMMARY_EXCLUDE = {"fold", "n", "n_train", "n_val", "val_year", "train_years"}
 
 
@@ -46,16 +41,16 @@ def _is_summary_metric(k: str, v: Any) -> bool:
 
 
 def _build_folds(cv_cfg: dict[str, Any], year, line_id) -> list:
-    """Arma los folds temporales. Devuelve lista de ``(train_idx, val_idx, scoring)``.
+    """Arma los folds temporales. Devuelve lista de (train_idx, val_idx, scoring).
 
-    ``scoring=False`` marca folds de DIAGNÓSTICO: se evalúan y loguean igual, pero
-    NO entran en el resumen (``pearson_r_mean``) que optimiza el sweep.
+    scoring=False marca folds de DIAGNÓSTICO: se evalúan y loguean igual, pero
+    NO entran en el resumen (pearson_r_mean) que optimiza el sweep.
 
     Schemes:
-    - ``fixed_temporal``: un único fold de scoring (split fijo train/val).
-    - ``expanding_temporal``: folds de scoring por ``val_years`` (expanding window,
-      train = años previos) + folds de diagnóstico opcionales en ``report_only``
-      (lista de ``{val_year, train_years?}``; sin ``train_years`` usa expanding).
+    - fixed_temporal: un único fold de scoring (split fijo train/val).
+    - expanding_temporal: folds de scoring por val_years (expanding window,
+      train = años previos) + folds de diagnóstico opcionales en report_only
+      (lista de {val_year, train_years?}; sin train_years usa expanding).
     """
     scheme = cv_cfg.get("scheme", "fixed_temporal")
     enforce = "val" if cv_cfg.get("enforce_disjoint_lines", True) else "train"
@@ -112,8 +107,8 @@ def run_evaluation(
         bootstrap.enabled, bootstrap.n_boot, bootstrap.alpha (IC opcional)
         model.name (+ model.params)
 
-    Devuelve dict con ``per_fold`` (lista de métricas) y ``summary`` (agregado).
-    Con el split fijo ``per_fold`` tiene un único elemento.
+    Devuelve dict con per_fold (lista de métricas) y summary (agregado).
+    Con el split fijo per_fold tiene un único elemento.
     """
     log = log_fn or _noop
     data_cfg = config.get("data", {})
@@ -121,13 +116,11 @@ def run_evaluation(
     boot_cfg = config.get("bootstrap", {})
     seed = int(config.get("seed", 575))
 
-    # --- Carga directa de los CSV + arrays de modelado -----------------------
     dataset = load_dataset(data_cfg["geno_csv"], data_cfg["pheno_csv"])
     target = data_cfg.get("target", "GY")
-    env = data_cfg.get("env")  # None => apila optimal + drought
+    env = data_cfg.get("env")
     arrays = dataset.to_modeling_arrays(target=target, env=env)
 
-    # --- Split(s) temporal(es) + disjuntos por línea -------------------------
     folds = _build_folds(cv_cfg, arrays.year, arrays.line_id)
     if not folds:
         raise RuntimeError(
@@ -142,22 +135,15 @@ def run_evaluation(
     histories: list[dict[str, Any]] = []
     preds: list[dict[str, Any]] = []
     for i, (train_idx, val_idx, scoring) in enumerate(folds):
-        # Guard duro: ninguna línea cruza train/val (regla 2).
         assert_no_line_leakage(train_idx, val_idx, arrays.line_id)
         if len(val_idx) == 0:
-            # Tras hacer líneas disjuntas puede quedar val vacío; se reporta y se saltea.
             log({"fold": i, "skipped_empty_val": 1})
             continue
 
         X_tr, y_tr = arrays.X[train_idx], arrays.y[train_idx]
         X_va, y_va = arrays.X[val_idx], arrays.y[val_idx]
 
-        model = build_model(config)  # modelo fresco por fold (sin fuga de estado)
-        # Contexto del fold para selección interna de HP temporal-aware (regla 3).
-        # eval_X/eval_y = val del fold SOLO para MONITOREAR la curva por época (lo usa el MLP
-        # sin early stopping para loguear val_loss/val_pearson). NUNCA selecciona ni entrena
-        # sobre el val (patience=None ⇒ no corta, no restaura) ⇒ sin leakage; el resto de los
-        # modelos lo ignora. Las líneas de val son disjuntas del train (assert de arriba).
+        model = build_model(config)
         model.set_fit_context(
             year=arrays.year[train_idx],
             line_id=arrays.line_id[train_idx],
@@ -168,8 +154,6 @@ def run_evaluation(
         y_hat = model.predict(X_va)
 
         m = regression_metrics(y_va, y_hat)
-        # matching20: utilidad del modelo para SELECCIONAR el top-20% de líneas
-        # (coincidence index predicho↔observado sobre el val del fold).
         m["matching20"] = coincidence_index(y_va, y_hat, 0.2)
         train_years = sorted(set(int(y) for y in arrays.year[train_idx]))
         val_years = sorted(set(int(y) for y in arrays.year[val_idx]))
@@ -181,16 +165,12 @@ def run_evaluation(
             train_years=str(train_years),
             val_year=val_years[0] if len(val_years) == 1 else str(val_years),
         )
-        # Estimaciones del modelo (lambda_0, varianzas REML, ...) → métricas del
-        # fold: los escalares numéricos se logean a wandb (fold/* y summary/*) y
-        # quedan inspeccionables sin bajar el modelo.
         fitted_params = model.get_fitted_params()
         for k, v in fitted_params.items():
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 m[k] = v
 
         if boot_cfg.get("enabled", False):
-            # IC por bootstrap a nivel línea (cluster) sobre el set de validación.
             ci = bootstrap_ci(
                 y_va,
                 y_hat,
@@ -205,9 +185,6 @@ def run_evaluation(
             boot_samples.append({"fold": i, **{name: b["samples"] for name, b in ci.items()}})
 
         per_fold.append(m)
-        # Predicciones del fold (y_true/y_pred + line_id para alinear por línea): las
-        # consumen los ensembles del notebook (blend MLP+GBLUP, promedio de redes).
-        # Livianas (unos cientos de floats) ⇒ siempre on; train.py las ignora.
         preds.append({
             "fold": i,
             "role": m["role"],
@@ -216,24 +193,16 @@ def run_evaluation(
             "y_true": np.asarray(y_va, dtype=float).ravel(),
             "y_pred": np.asarray(y_hat, dtype=float).ravel(),
         })
-        # Curva de entrenamiento por época, si el modelo la expone (el MLP guarda
-        # history_ con train_loss y, cuando hubo inner-val, val_loss/val_pearson).
-        # Permite graficar/loguear las learning curves; se cachea con los resultados.
         hist = getattr(model, "history_", None) or getattr(getattr(model, "inner", None), "history_", None)
         if hist:
             histories.append({"fold": i, "history": list(hist)})
         if return_models:
-            # Modelo ya ajustado SOLO con train de este fold; train_years queda en
-            # metadata para que load_model_artifact pueda chequear leakage al reusarlo.
-            # fitted_params (incluye no-numéricos como lambda_method) → metadata del artifact.
             trained.append({
                 "fold": i,
                 "model": model,
                 "train_years": train_years,
                 "fitted_params": fitted_params,
             })
-        # Clave propia por fold (f{i}_{role}_{val_year}/...) para que en wandb cada
-        # fold sea un panel separado y su summary no se pise con el del fold siguiente.
         tag = f"f{i}_{m['role']}_{m['val_year']}"
         log({f"{tag}/{k}": v for k, v in m.items()})
 
@@ -244,9 +213,6 @@ def run_evaluation(
             "año de validación ya estaban en train; probá enforce_disjoint_lines: false."
         )
 
-    # El resumen (pearson_r_mean -> métrica que optimiza el sweep) usa SOLO los
-    # folds de scoring; los de diagnóstico (role="report") se loguean por fold
-    # pero no entran en el agregado.
     scoring_folds = [f for f in per_fold if f.get("role") == "scoring"]
     summary = summarize_folds(
         [{k: v for k, v in f.items() if _is_summary_metric(k, v)} for f in scoring_folds]

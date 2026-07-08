@@ -1,19 +1,15 @@
-"""Mixture of Experts SINGLE-TASK con gating PCA+GMM (ruteo hard top-1).
+"""Mixture of experts single-task con gating PCA+GMM (ruteo hard top-1).
 
-Variante single-task del `moe_multitask`: mismo gating (PCA sobre SNPs + GMM, ruteo hard top-1,
-`min_cluster_size` + global fallback) pero cada experto es una red **single-task** (un `MLPRegressor`
-que predice UN fenotipo), no una red multitarea con tronco compartido y una cabeza por trait/ambiente.
+Versión single-task del moe_multitask: mismo gating (PCA + GMM, hard top-1,
+min_cluster_size y fallback global) pero cada experto es una red single-task (un
+MLPRegressor que predice un fenotipo) en vez de una red multitarea con tronco
+compartido. Corre por el harness single-task (run_evaluation), elegido por
+data.target y data.env. Sirve para el A/B de si el sharing multitarea aporta sobre
+modelar un ambiente con expertos independientes.
 
-Se enchufa en el harness SINGLE-TASK (`run_evaluation`): interfaz ``fit(X, y)`` / ``predict(X) -> (n,)``,
-elegido por ``data.target`` + ``data.env`` del config. No pasa por el dispatch multitask de `train.py`
-(cae al `run_evaluation` por default). Sirve para el A/B "¿el sharing multitarea (p.ej. GY optimal +
-drought con tronco compartido) aporta sobre modelar un ambiente solo con expertos independientes?".
-
-Cada experto es un `_SingleTaskEnsemble` (n_models `MLPRegressor` con seeds distintas, promedio
-z-scoreado por modelo — igual criterio que `EnsembleMultitaskRegressor`: la loss Pearson deja la
-escala arbitraria, sin z-score el modelo de mayor varianza domina). Reusa el gating de `moe_multitask`
-(`SNPPreprocessor`/`PCAReducer`) sin reimplementarlo. Anti-leakage (regla 1): PCA y GMM se ajustan
-SOLO con el train del fold; en inferencia val/test se proyectan sobre los MISMOS componentes/GMM.
+Cada experto es un _SingleTaskEnsemble (n_models MLPRegressor con seeds distintas,
+promedio z-scoreado por modelo, mismo criterio que EnsembleMultitaskRegressor). PCA y
+GMM se ajustan con el train del fold.
 """
 from __future__ import annotations
 
@@ -26,7 +22,6 @@ from src.data.preprocess import PCAReducer, PreprocChain, SNPPreprocessor
 from src.models.base import BaseModel
 from src.models.mlp import MLPRegressor
 
-# Defaults del gating (PCA + GMM), idénticos al hard MoE multitask.
 _GATING_DEFAULTS: dict[str, Any] = {
     "pca_n_components": 50,
     "standardize": True,
@@ -42,11 +37,11 @@ _GATING_DEFAULTS: dict[str, Any] = {
 
 
 class _SingleTaskEnsemble(BaseModel):
-    """Ensemble de ``n_models`` `MLPRegressor` single-task (promedio z-scoreado por modelo).
+    """Ensemble de n_models MLPRegressor single-task (promedio z-scoreado por modelo).
 
-    `params`: ``inner`` (params del `MLPRegressor`), ``n_models`` (default 5), ``seed_step`` (default
-    1000). Cada modelo se entrena con seed ``inner.random_state + i*seed_step``; sus predicciones se
-    estandarizan con los estadísticos de TRAIN de cada modelo (sin leakage) antes de promediar.
+    params: inner (params del MLPRegressor), n_models (default 5), seed_step (default
+    1000). Cada modelo se entrena con seed random_state + i*seed_step; sus predicciones
+    se estandarizan con los estadísticos de train de cada modelo antes de promediar.
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -129,12 +124,12 @@ class _SingleTaskEnsemble(BaseModel):
 class MixtureOfExpertsSingleTaskRegressor(BaseModel):
     """Mixture of experts SINGLE-TASK con gating PCA+GMM y ruteo hard top-1.
 
-    `params` (sub-dict ``model.params`` del config):
-        gating : dict con los defaults de ``_GATING_DEFAULTS`` (PCA + GMM + salvaguardas p≫n).
-        expert : dict de params de `_SingleTaskEnsemble` (``n_models``, ``seed_step`` e ``inner`` con
-                 la arquitectura/loss del `MLPRegressor`). Es lo que comparten todos los expertos.
+    params (sub-dict model.params del config):
+        gating : dict con los defaults de _GATING_DEFAULTS (PCA + GMM + salvaguardas p>>n).
+        expert : dict de params de _SingleTaskEnsemble (n_models, seed_step e inner con
+                 la arquitectura/loss del MLPRegressor). Es lo que comparten todos los expertos.
 
-    Interfaz single-task: ``fit(X, y)`` / ``predict(X) -> (n,)``. Se elige por ``data.target``/``data.env``.
+    Interfaz single-task: fit(X, y) / predict(X) -> (n,). Se elige por data.target/data.env.
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -142,7 +137,6 @@ class MixtureOfExpertsSingleTaskRegressor(BaseModel):
         self.gating_params: dict[str, Any] = {**_GATING_DEFAULTS, **dict(self.params.get("gating", {}) or {})}
         self.expert_params: dict[str, Any] = dict(self.params.get("expert", {}) or {})
 
-    # --- Construcción de piezas (gating idéntico al hard MoE multitask) ------
 
     def _build_gating(self) -> Any:
         g = self.gating_params
@@ -162,7 +156,6 @@ class MixtureOfExpertsSingleTaskRegressor(BaseModel):
     def _make_expert(self) -> _SingleTaskEnsemble:
         return _SingleTaskEnsemble({"params": dict(self.expert_params)})
 
-    # --- Interfaz BaseModel -------------------------------------------------
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "MixtureOfExpertsSingleTaskRegressor":
         from sklearn.mixture import GaussianMixture
@@ -177,7 +170,6 @@ class MixtureOfExpertsSingleTaskRegressor(BaseModel):
         k = int(g["k"])
         self.k_ = k
 
-        # --- Gating: PCA + GMM ajustados SOLO con el train (regla 1) ---------
         self.pre_ = self._build_gating()
         Z = self.pre_.fit_transform(X)
         self.gmm_ = GaussianMixture(
@@ -188,13 +180,12 @@ class MixtureOfExpertsSingleTaskRegressor(BaseModel):
             random_state=int(g["random_state"]),
         )
         self.gmm_.fit(Z)
-        labels = self.gmm_.predict(Z)  # asignación hard por argmax de responsabilidad
+        labels = self.gmm_.predict(Z)
 
         year = ctx.get("year")
         line_id = ctx.get("line_id")
         min_size = int(g["min_cluster_size"])
 
-        # --- Un experto (ensemble single-task) por cluster con suficientes filas --
         self.experts_: dict[int, _SingleTaskEnsemble] = {}
         self.cluster_sizes_: dict[int, int] = {}
         for c in range(k):
@@ -211,7 +202,6 @@ class MixtureOfExpertsSingleTaskRegressor(BaseModel):
             expert.fit(X[mask], y[mask])
             self.experts_[c] = expert
 
-        # --- Global fallback sobre TODO el train (clusters chicos/vacíos) ----
         self.fallback_: _SingleTaskEnsemble | None = None
         if bool(g["global_fallback"]) or (len(self.experts_) < k):
             fb = self._make_expert()
@@ -228,7 +218,7 @@ class MixtureOfExpertsSingleTaskRegressor(BaseModel):
             raise RuntimeError("MixtureOfExpertsSingleTaskRegressor.predict llamado antes de fit.")
         X = np.asarray(X, dtype=np.float64)
         Z = self.pre_.transform(X)
-        clusters = self.gmm_.predict(Z)  # cluster de mayor responsabilidad por muestra
+        clusters = self.gmm_.predict(Z)
         out = np.empty(X.shape[0], dtype=float)
         for c in np.unique(clusters):
             rows = np.flatnonzero(clusters == c)
@@ -261,7 +251,6 @@ class MixtureOfExpertsSingleTaskRegressor(BaseModel):
         params["n_params"] = int(n_params)
         return params
 
-    # --- Persistencia (cada experto es un ensemble de redes torch) ----------
 
     def save(self, path: str | Path) -> Path:
         import joblib

@@ -1044,3 +1044,71 @@ metodológico consolidado: (1) el **gating por subpoblación genómica** despega
 encima de GBLUP; (2) el **sharing multitarea entre ambientes** (2→6 cabezas) es esencial y regulariza a
 los expertos hambrientos de datos; (3) todo lo que **especializa por ambiente o supervisa el ruteo por
 fenotipo** reorienta hacia el ambiente fácil (óptimo) y pierde en el difícil (sequía). 2020 sigue sellado.
+
+## Fase 11 — Anexo del informe: figuras, sweeps dedicados, ruido y CIERRE 2020
+
+**Objetivo:** cerrar el proyecto para el informe (máx 5 carillas, framing MoE-titular). Se produjeron
+las figuras del anexo, se cerraron dos sweeps pendientes, se caracterizó la robustez al ruido, y se
+hizo el **cierre sobre 2020** (primera vez que se toca el holdout — legítimo por la regla 3).
+Figuras + scripts reproducibles en `scripts/analysis/report_figs/`; PNGs/CSVs en
+`experiments/figs/report/`; página web (Artifact) con las 6 figuras y el análisis.
+
+### Anexo visual (6 figuras)
+1. **EDA PCA 3D por año** (dev): estructura difusa (PC1-3 = 6.3/5.1/4.0 %) + drift entre campañas
+   (CV-AUC 0.95/0.93/0.98) → funda el split temporal. `fig_eda_pca3d.py`.
+2. **Comparativa de los 7 modelos** (Pearson val 2019 ±IC95): sequía → MoE hard 0.407 > todos; óptimo
+   → se invierte (GxE 0.385, PLS 0.350 > GBLUP 0.315). `fig_model_comparison.py`.
+3. **Clusters del MoE**: gating PCA+GMM k=4 (192/465/1265/398); el de 192 cae bajo `min_cluster_size`
+   → fallback; c2 (mezcla de años) absorbe 585/722 de val 2019; c1 (puro 2018) recibe 0. `fig_moe_clusters.py`.
+4. **Ruido en inferencia** (fig 4) y **ruido en train** (fig 5): ver abajo.
+5. **Cierre 2020 con spike-in** (fig 6): ver abajo.
+
+### Sweeps dedicados PLS y contrastivo — no superan el HP heredado
+Se corrieron sweeps bayesianos (80 trials, selección honesta 2017→2018):
+`sweep_moe_pls_6head.yaml` (`morheqkq`, portada GY_optimal) y `sweep_moe_contrastive_6head.yaml`
+(`r8873kbb`, portada GY_drought). Reentrenando el HP ganador sobre 2017+2018 → val 2019
+(`sweep_winners_2019.csv`): **PLS óptimo 0.213** (heredado `u1kgstvr` 0.350, y **< GBLUP 0.315**);
+**contrastivo sequía 0.243** (heredado 0.295, ≈ GBLUP). El top-3 de cada sweep es apretado ⇒ es
+**overfitting del fold 2018** (demasiado ruidoso para tanta libertad de HP), no un trial con suerte.
+Conclusión: el **HP heredado sigue siendo el mejor**; el eje "hard para sequía, PLS para óptimo" se
+sostiene con el heredado, no con sweep.
+
+### Robustez al ruido (flip Bernoulli de SNPs) — `src/eval/noise.py`
+Harness reutilizable (`flip_snps`, `noise_curve`, modos inference/train; reusa loader/splits/métricas).
+- **Inferencia** (fit limpio, val corrupto a ε, 5 reps): en sequía el **MoE hard es el MÁS robusto**
+  (retiene 95 % a ε=0.05, 86 % a ε=0.10; 0.407→0.352), siempre arriba. El **gating supervisado es
+  frágil**: contrastivo cae a 47 % (0.295→0.138), PLS también — perturbar SNPs desordena su ruteo
+  aprendido (coherente con LD-pruning). GBLUP plano (~92 %) pero bajo. La PCA sobre SNPs completos
+  absorbe el ruido ⇒ la ventaja del MoE **no** es artefacto de datos limpios. `noise_analysis.py`.
+- **Train** (fit con SNPs corruptos, val limpio): **no ayuda** — hunde MoE hard (0.407→0.31) y Ensemble;
+  ~neutro GBLUP. La robustez del MoE viene de su regularización (dropout+multitarea), no del
+  augmentation. `train_noise_only.py`.
+
+### CIERRE 2020 con spike-in — `src/eval/spike.py` (fig 6, el resultado accionable)
+Predecir 2020 entrenando solo en dev **COLAPSA** para GY sequía (cold-start: cero overlap de GID +
+deriva de sequía): el 0.407 es dev y **no transfiere cross-ciclo**. El *spike-in* modela el despliegue
+real: fenotipar una fracción chica de líneas de 2020, sumarlas al train (con fenotipo) y predecir el
+2020 restante (held-out; sin leakage). Protocolo: train = dev 2017-2019 + `s`·|2020| líneas;
+spike ∈ {0, 5 %, 10 %}, 3 reps (qué líneas), target GY_drought; preproc train-only sobre el train
+aumentado. Verificado: GBLUP spike=0 reproduce el `−0.204` del run previo.
+
+Pearson GY_drought sobre el holdout 2020 (media de 3 reps, `fig6_spike_2020.csv`):
+
+| modelo | spike 0 % | spike 5 % | spike 10 % |
+|---|---:|---:|---:|
+| **MoE PLS** | −0.123 | **0.350** | **0.526** |
+| **MoE hard** | −0.128 | 0.338 | 0.469 |
+| Contrastivo | −0.135 | 0.346 | 0.428 |
+| Ensemble | −0.110 | 0.275 | 0.428 |
+| GBLUP | −0.204 | 0.121 | 0.290 |
+
+- **Sin spike todos colapsan** (Pearson negativo, −0.11 a −0.20). GBLUP el peor.
+- **Con 5 % ya se da vuelta el signo** y **las familias MoE (~0.35) casi triplican a GBLUP (0.121)**;
+  el grueso del rescate lo captura el primer 5 %. Con 10 % la brecha persiste (MoE PLS 0.526 vs GBLUP
+  0.290). El **MoE rescata sustancialmente mejor que el baseline aditivo** — la lectura accionable para
+  mejoramiento: un puñado de líneas fenotipadas del ciclo nuevo destraba la predicción genómica.
+- (Nota del run previo, no re-corrida acá: con **menos años de dev** en el train el rescate es aún
+  mayor —GBLUP 2019-only + 10 % ≈ 0.43 vs 2017-2019 ≈ 0.29—; más años viejos meten deriva. Documentado
+  para el informe, no es la corrida principal.)
+
+Con esto el proyecto queda cerrado para el informe. 2020 se usó SOLO en esta fase de cierre.

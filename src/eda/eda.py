@@ -10,9 +10,6 @@ ENVIRONMENTS = ("Optimal", "Drought")
 TRAIT_ENV_COLS = tuple(f"{t}_{e}" for e in ENVIRONMENTS for t in TARGETS)
 
 
-# --------------------------------------------------------------------------- #
-# Shapes y faltantes
-# --------------------------------------------------------------------------- #
 def overview(geno: pd.DataFrame, pheno: pd.DataFrame) -> pd.DataFrame:
     """Resumen de shapes y solapamiento de GID entre las dos tablas."""
     g = set(geno["GID"].astype(str))
@@ -49,9 +46,6 @@ def phenotype_missingness(pheno: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Quality Control (QC) de SNPs: MAF, monomórficos, filtro
-# --------------------------------------------------------------------------- #
 def allele_freq(X: np.ndarray) -> np.ndarray:
     """Frecuencia del alelo '1' por SNP (= media de la columna; líneas homocigotas)."""
     return np.asarray(X, dtype=np.float64).mean(axis=0)
@@ -95,7 +89,7 @@ def impute_major_allele(X_train: np.ndarray, X_apply: np.ndarray | None = None):
     política codificada por si una reextracción introdujera NaN.
     """
     Xt = np.asarray(X_train, dtype=np.float64)
-    major = (np.nanmean(Xt, axis=0) >= 0.5).astype(np.float64)  # alelo mayoritario en train
+    major = (np.nanmean(Xt, axis=0) >= 0.5).astype(np.float64)
     target = Xt if X_apply is None else np.asarray(X_apply, dtype=np.float64)
     out = target.copy()
     nan_mask = np.isnan(out)
@@ -104,9 +98,6 @@ def impute_major_allele(X_train: np.ndarray, X_apply: np.ndarray | None = None):
     return out, major
 
 
-# --------------------------------------------------------------------------- #
-# Targets: distribución, outliers, correlaciones
-# --------------------------------------------------------------------------- #
 def long_targets(pheno: pd.DataFrame) -> pd.DataFrame:
     """Pasa los 6 targets a formato largo (GID, Year, trait, env, value)."""
     m = pheno.melt(
@@ -165,14 +156,11 @@ def outlier_summary(pheno: pd.DataFrame, k: float = 1.5) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["target", "cota_inf", "cota_sup", "n_outliers", "pct", "max"])
 
 
-# --------------------------------------------------------------------------- #
-# Estructura poblacional: PCA y drift temporal
-# --------------------------------------------------------------------------- #
 def pca_embed(X: np.ndarray, n_components: int = 10, fit_mask: np.ndarray | None = None, seed: int = 0):
-    """PCA sobre los SNPs. Centra y ajusta con `fit_mask` (o todo si es None),
+    """PCA sobre los SNPs. Centra y ajusta con fit_mask (o todo si es None),
     luego proyecta TODAS las filas. Devuelve (Z, explained_variance_ratio).
 
-    `fit_mask` permite ajustar solo en dev y proyectar el test (drift sin leakage).
+    fit_mask permite ajustar solo en dev y proyectar el test (drift sin leakage).
     """
     from sklearn.decomposition import PCA
 
@@ -185,7 +173,7 @@ def pca_embed(X: np.ndarray, n_components: int = 10, fit_mask: np.ndarray | None
 
 
 def year_centroids(Z: np.ndarray, years: np.ndarray, n_pcs: int = 2) -> pd.DataFrame:
-    """Centroide (media) de cada año en las primeras `n_pcs` componentes."""
+    """Centroide (media) de cada año en las primeras n_pcs componentes."""
     years = np.asarray(years)
     rows = []
     for y in sorted(np.unique(years)):
@@ -204,9 +192,9 @@ def drift_auc(
     seed: int = 0,
 ) -> pd.DataFrame:
     """Separabilidad genética entre pares de años: AUC de CV de una logística
-    sobre las primeras `n_pcs` PCs (PCA dentro del pipeline → sin leakage del CV).
+    sobre las primeras n_pcs PCs (PCA dentro del pipeline -> sin leakage del CV).
 
-    AUC≈0.5 ⇒ años indistinguibles por genotipo; AUC≈1 ⇒ cohortes distintas
+    AUC≈0.5 => años indistinguibles por genotipo; AUC≈1 => cohortes distintas
     (drift fuerte). Da evidencia directa para el protocolo de validación.
     """
     from sklearn.decomposition import PCA
@@ -229,9 +217,6 @@ def drift_auc(
     return pd.DataFrame(rows, columns=["par_de_años", "n", "cv_auc"])
 
 
-# --------------------------------------------------------------------------- #
-# Relatedness / duplicados (leakage entre splits)
-# --------------------------------------------------------------------------- #
 def exact_duplicate_groups(X: np.ndarray) -> dict:
     """Grupos de líneas con perfil de SNPs IDÉNTICO (clones exactos)."""
     X = np.ascontiguousarray(np.asarray(X))
@@ -252,7 +237,7 @@ def ibs_identity_matrix(X: np.ndarray) -> np.ndarray:
     """
     Xf = np.asarray(X, dtype=np.float32)
     n, p = Xf.shape
-    agree = Xf @ Xf.T + (1.0 - Xf) @ (1.0 - Xf.T)  # coincidencias (ambos 1 o ambos 0)
+    agree = Xf @ Xf.T + (1.0 - Xf) @ (1.0 - Xf.T)
     ident = agree / p
     np.fill_diagonal(ident, -1.0)
     return ident
@@ -260,7 +245,7 @@ def ibs_identity_matrix(X: np.ndarray) -> np.ndarray:
 
 def nearest_neighbor_identity(ident: np.ndarray, years: np.ndarray | None = None) -> pd.DataFrame:
     """Para cada línea: identidad IBS con su vecino más cercano (global) y, si se
-    pasan `years`, con el vecino más cercano de OTRO año (relativo cross-split).
+    pasan years, con el vecino más cercano de OTRO año (relativo cross-split).
     """
     nn = ident.max(axis=1)
     out = pd.DataFrame({"nn_ibs": nn})

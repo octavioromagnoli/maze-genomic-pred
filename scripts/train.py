@@ -250,10 +250,9 @@ def main() -> None:
     # trait). La ruta single-task de abajo queda intacta. El logging multitask vive en su
     # propio helper. `ensemble_multitask` envuelve `mlp_multitask` y usa el mismo pipeline.
     if config.get("model", {}).get("name") in (
-        "mlp_multitask", "mlp_multitask_tower", "ensemble_multitask", "moe_multitask",
-        "moe_gblup_multitask", "moe_gblup_residual_multitask", "moe_gpca_multitask",
-        "moe_ldprune_multitask", "moe_pls_multitask", "moe_contrastive_multitask",
-        "moe_gxe_multitask", "moe_spectral_multitask", "moe_soft_multitask",
+        "mlp_multitask", "ensemble_multitask", "moe_multitask",
+        "moe_gblup_residual_multitask", "moe_pls_multitask",
+        "moe_gxe_multitask", "moe_soft_multitask",
     ):
         results = run_multitask_evaluation(
             config, log_fn=make_wandb_logger(run), return_models=save_model

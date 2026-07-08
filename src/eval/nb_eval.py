@@ -1,14 +1,13 @@
 """Evaluadores para el notebook de comparación (cachean en disco, no tocan wandb).
 
-`make_evaluators` arma los closures ``evaluate_model`` / ``eval_with_preds`` que usan los
-notebooks: corren `run_evaluation` con bootstrap forzado, cachean por
-``(config, seed, n_boot, alpha)`` y devuelven filas tidy + las muestras del bootstrap (y,
-``eval_with_preds``, además stashea las predicciones del fold de val para los ensembles).
+make_evaluators arma los closures evaluate_model / eval_with_preds que usan los
+notebooks: corren run_evaluation con bootstrap forzado, cachean por
+(config, seed, n_boot, alpha) y devuelven filas tidy + las muestras del bootstrap
+(eval_with_preds además guarda las predicciones del fold de val para los ensembles).
 
-La lógica vive acá (no inline en el notebook) para que **cada sección pueda levantarla con
-un solo import y correr de forma independiente**: con el caché en disco
-(``outputs/eval_cache``) una sección que se vuelve a correr es un *cache hit* ⇒ no reentrena.
-Mantener la misma `results_cache_key` que el resto del proyecto garantiza que comparta caché.
+Vive acá para que cada sección del notebook se levante con un solo import y corra
+independiente: con el caché en disco (outputs/eval_cache) volver a correr una sección es
+un cache hit. Usa la misma results_cache_key que el resto del proyecto para compartir caché.
 """
 from __future__ import annotations
 
@@ -46,7 +45,7 @@ def make_evaluators(
     curves_by_model: dict | None = None,
     preds_by_model: dict | None = None,
 ):
-    """Devuelve ``(evaluate_model, eval_with_preds, curves_by_model, preds_by_model)``.
+    """Devuelve (evaluate_model, eval_with_preds, curves_by_model, preds_by_model).
 
     Args:
         metrics: nombres de las métricas a reportar en las filas tidy (las del proyecto).
@@ -55,9 +54,9 @@ def make_evaluators(
             predicciones del fold de val; se crean vacíos si no se pasan. Pasá los mismos
             entre secciones para acumular sin pisar.
 
-    `evaluate_model(name, config)` ⇒ ``(rows, samples)`` con
-    ``rows = [{model, metric, point, lo, hi, n}]`` y ``samples = {metric: muestras_boot}``.
-    `eval_with_preds(...)` hace lo mismo y además guarda ``preds_by_model[name]`` (line_id /
+    evaluate_model(name, config) => (rows, samples) con
+    rows = [{model, metric, point, lo, hi, n}] y samples = {metric: muestras_boot}.
+    eval_with_preds(...) hace lo mismo y además guarda preds_by_model[name] (line_id /
     y_true / y_pred del fold de val) para alinear y combinar en los ensembles.
     """
     metrics = tuple(metrics)
@@ -68,19 +67,19 @@ def make_evaluators(
         cfg = load_config(config) if isinstance(config, str) else copy.deepcopy(config)
         set_seed(int(cfg.get("seed", 575)))
         cfg.setdefault("bootstrap", {})
-        cfg["bootstrap"].update(enabled=True, n_boot=n_boot, alpha=alpha)  # IC siempre on
+        cfg["bootstrap"].update(enabled=True, n_boot=n_boot, alpha=alpha)
 
         key = results_cache_key(cfg, n_boot=n_boot, alpha=alpha)
         res = load_cached_results(key) if use_cache else None
         if res is None:
-            res = run_evaluation(cfg)              # sin log_fn => no toca wandb
-            save_cached_results(key, res)          # cachea para las próximas corridas
+            res = run_evaluation(cfg)
+            save_cached_results(key, res)
         else:
             print(f"  [cache hit] {name} ({key})")
 
-        fold = res["per_fold"][-1]                 # split fijo: el (único) fold de val
+        fold = res["per_fold"][-1]
         boot = res["bootstrap"][-1] if res["bootstrap"] else {}
-        curves[name] = res.get("histories", [])    # learning curves (si el modelo las expone)
+        curves[name] = res.get("histories", [])
 
         rows, samples = [], {}
         for m in metrics:
@@ -107,28 +106,20 @@ def make_evaluators(
     return evaluate_model, eval_with_preds, curves, preds
 
 
-# --- Comparación multitask por trait (Fase B) -------------------------------
-# Toda la lógica de la sección "Fase B" del notebook vive acá (convención del
-# proyecto: el notebook solo importa y llama). `make_multitask_comparison` arma un
-# `compare_env(...)` que: evalúa los arms multitask (cacheado, sin wandb), trae el
-# univariado (MLP single-task) y GBLUP por trait, alinea por línea y saca IC95% del
-# MISMO resample (deltas pareados). El parámetro `ranks` elige qué modelo de cada
-# sweep mostrar: ``(1,)`` el mejor (default), ``(1, 2, 3)`` el top-3, ``(2,)`` solo el
-# segundo, etc.
 
 
 def make_multitask_evaluator(metrics: Sequence[str], *, n_boot: int = 2000,
                              alpha: float = 0.05, use_cache: bool = True):
-    """Closure ``eval_multitask(name, config) -> dict`` (``run_multitask_evaluation`` cacheado)."""
+    """Closure eval_multitask(name, config) -> dict (run_multitask_evaluation cacheado)."""
     def eval_multitask(name, config, *, n_boot=n_boot, alpha=alpha, use_cache=use_cache):
         cfg = load_config(config) if isinstance(config, str) else copy.deepcopy(config)
         set_seed(int(cfg.get("seed", 575)))
         cfg.setdefault("bootstrap", {})
-        cfg["bootstrap"].update(enabled=True, n_boot=n_boot, alpha=alpha)  # IC siempre on
+        cfg["bootstrap"].update(enabled=True, n_boot=n_boot, alpha=alpha)
         key = results_cache_key(cfg, n_boot=n_boot, alpha=alpha)
         res = load_cached_results(key) if use_cache else None
         if res is None:
-            res = run_multitask_evaluation(cfg)   # sin log_fn => no toca wandb
+            res = run_multitask_evaluation(cfg)
             save_cached_results(key, res)
         else:
             print(f"  [cache hit] {name} ({key})")
@@ -137,16 +128,16 @@ def make_multitask_evaluator(metrics: Sequence[str], *, n_boot: int = 2000,
 
 
 def sweep_overrides(sweep_id, *, rank: int = 1, metric=None, goal=None) -> dict:
-    """HP barridos (claves con punto) del modelo en posición ``rank`` del sweep (1 = mejor).
+    """HP barridos (claves con punto) del modelo en posición rank del sweep (1 = mejor).
 
-    Devuelve ``{}`` si no hay ``sweep_id`` o si falla la lectura (⇒ se usan los HP base del
-    config, con aviso). ``rank`` permite elegir el 2º/3º mejor, etc. (reusa `top_runs_from_sweep`).
+    Devuelve {} si no hay sweep_id o si falla la lectura (=> se usan los HP base del
+    config, con aviso). rank permite elegir el 2º/3º mejor, etc. (reusa top_runs_from_sweep).
     """
     if not sweep_id:
         return {}
     try:
         top = top_runs_from_sweep(sweep_id, k=int(rank), metric=metric, goal=goal)
-    except Exception as e:  # sin wandb / sweep inexistente / sin métrica
+    except Exception as e:
         print(f"  [warn] no pude leer sweep {sweep_id} ({e}); uso HP base")
         return {}
     if len(top) < rank:
@@ -165,7 +156,7 @@ def _report_cfg(base, overrides: dict, report_cv: dict) -> dict:
 
 
 def gblup_report_config(gblup_base, trait: str, env: str, report_cv: dict) -> dict:
-    """GBLUP del ``(trait, env)`` en el reporte (override target/env de un base reml)."""
+    """GBLUP del (trait, env) en el reporte (override target/env de un base reml)."""
     cfg = _report_cfg(gblup_base, {}, report_cv)
     cfg["data"]["target"] = trait
     cfg["data"]["env"] = env
@@ -174,7 +165,7 @@ def gblup_report_config(gblup_base, trait: str, env: str, report_cv: dict) -> di
 
 def univ_report_config(mlp_base, trait: str, env: str, report_cv: dict, *,
                        gy_sweep: str = "", rank: int = 1) -> dict:
-    """MLP single-task del ``(trait, env)`` en el reporte. GY usa su sweep (``rank``); PH/AD HP base."""
+    """MLP single-task del (trait, env) en el reporte. GY usa su sweep (rank); PH/AD HP base."""
     overrides = sweep_overrides(gy_sweep, rank=rank) if trait == "GY" else {}
     cfg = _report_cfg(mlp_base, overrides, report_cv)
     cfg["data"]["target"] = trait
@@ -185,7 +176,7 @@ def univ_report_config(mlp_base, trait: str, env: str, report_cv: dict, *,
 def format_multitask_deltas(paired: dict, traits: Sequence[str],
                             refs: Sequence[str] = ("GBLUP", "Univariado"),
                             metric: str = "pearson_r") -> str:
-    """Texto de los deltas pareados por trait (``* `` = IC95% no cruza 0)."""
+    """Texto de los deltas pareados por trait (*  = IC95% no cruza 0)."""
     out: list[str] = []
     for trait in traits:
         out.append(f"[{trait}] deltas {metric} (* = IC95% no cruza 0):")
@@ -204,16 +195,16 @@ def make_multitask_comparison(*, eval_with_preds, preds_by_model, report_cv: dic
                               metrics: Sequence[str], ens_metrics: dict,
                               traits: Sequence[str] = ("GY", "PH", "AD"),
                               n_boot: int = 2000, alpha: float = 0.05, use_cache: bool = True):
-    """Devuelve ``compare_env(env, ...)`` para la tabla por trait Multitask vs Univariado vs GBLUP.
+    """Devuelve compare_env(env, ...) para la tabla por trait Multitask vs Univariado vs GBLUP.
 
-    `eval_with_preds`/`preds_by_model` son los de `make_evaluators` (single-task: univariado y
-    GBLUP). `compare_env` evalúa los arms multitask (cacheado), alinea por línea y saca IC95% del
-    MISMO resample (deltas pareados). Devuelve un dict con ``tidy`` (tidy pearson_r),
-    ``wide`` (pivot trait×modelo), ``samples``, ``paired``, ``deltas`` (texto),
-    ``fig_match_gy`` (Figure de matching20 de GY, mismo estilo que ``figs``: punto ± IC95% por
-    modelo) y ``figs`` (``{trait: Figure}`` de pearson_r). `ranks` elige qué modelo de cada
-    sweep usar: ``(1,)`` el mejor,
-    ``(1, 2, 3)`` el top-3 (la tabla se ensancha), ``(2,)`` solo el segundo.
+    eval_with_preds/preds_by_model son los de make_evaluators (single-task: univariado y
+    GBLUP). compare_env evalúa los arms multitask (cacheado), alinea por línea y saca IC95% del
+    MISMO resample (deltas pareados). Devuelve un dict con tidy (tidy pearson_r),
+    wide (pivot trait×modelo), samples, paired, deltas (texto),
+    fig_match_gy (Figure de matching20 de GY, mismo estilo que figs: punto ± IC95% por
+    modelo) y figs ({trait: Figure} de pearson_r). ranks elige qué modelo de cada
+    sweep usar: (1,) el mejor,
+    (1, 2, 3) el top-3 (la tabla se ensancha), (2,) solo el segundo.
     """
     eval_multitask = make_multitask_evaluator(metrics, n_boot=n_boot, alpha=alpha, use_cache=use_cache)
     traits = tuple(traits)
@@ -226,12 +217,10 @@ def make_multitask_comparison(*, eval_with_preds, preds_by_model, report_cv: dic
         ranks = tuple(ranks)
         base_arms = list(mt_bases)
         if arms_for_trait is None:
-            # Un arm aplica a un trait si su config base lo incluye en data.targets.
             arms_for_trait = {t: [a for a in base_arms
                                   if t in load_config(mt_bases[a])["data"]["targets"]]
                               for t in traits}
 
-        # Predicciones multitask por (arm, rank) -> {trait: pred}.
         mt_preds: dict = {}
         for arm in base_arms:
             for rank in ranks:
@@ -240,14 +229,12 @@ def make_multitask_comparison(*, eval_with_preds, preds_by_model, report_cv: dic
                 mt_preds[_label(arm, rank)] = {p["trait"]: p for p in res["predictions"]
                                                if p["role"] == "scoring"}
 
-        # Univariado (MLP single-task) + GBLUP por trait (stashea en preds_by_model).
         for trait in traits:
             eval_with_preds(f"Univariado {trait} {env}",
                             univ_report_config(mlp_base, trait, env, report_cv, gy_sweep=gy_sweep))
             eval_with_preds(f"GBLUP {trait} {env}",
                             gblup_report_config(gblup_base, trait, env, report_cv))
 
-        # Tabla por trait + IC pareado (mismo resample, cluster por línea).
         tidy, samples_by_trait, paired, rows_by_trait = [], {}, {}, {}
         for trait in traits:
             named = [("GBLUP", preds_by_model[f"GBLUP {trait} {env}"]),

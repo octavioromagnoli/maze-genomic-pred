@@ -1,17 +1,15 @@
 """Traer el resultado de un sweep de wandb al análisis local.
 
-Un sweep deja, por cada trial, los HP barridos como claves planas con punto
-(p.ej. ``"preprocess.pca.n_components"``) en ``run.config`` y las métricas en
-``run.summary`` (`scripts/train.py` loguea ``pearson_r_mean`` ahí).
-`best_run_from_sweep` busca el trial que optimiza la métrica del sweep;
-`best_config_from_sweep` reconstruye el config de ese trial (mismo merge
-dot-notation que `train.py`) para re-evaluarlo localmente.
+Cada trial deja los HP barridos como claves planas con punto (p.ej.
+"preprocess.pca.n_components") en run.config y las métricas en run.summary.
+best_run_from_sweep busca el trial que optimiza la métrica del sweep y
+best_config_from_sweep reconstruye su config (mismo merge dot-notation que train.py)
+para re-evaluarlo localmente.
 
-Para GBLUP (determinista y barato) "el mejor modelo" queda **totalmente
-reproducido por su config + seed**: no hace falta bajar un pickle, se re-fittea y
-da bit-a-bit lo mismo que la corrida del sweep. Para modelos caros/estocásticos
-(NN/AE), guardá el modelo con ``artifacts.save_model: true`` y bajá el Artifact
-con `load_model_artifact` (ver `src/training/save_model.py`).
+Para GBLUP (determinista) el mejor modelo queda reproducido por su config + seed: se
+re-fittea y da lo mismo, sin bajar un pickle. Para modelos caros/estocásticos (NN/AE),
+guardá el modelo con artifacts.save_model: true y bajá el Artifact con
+load_model_artifact.
 """
 from __future__ import annotations
 
@@ -27,16 +25,16 @@ def best_run_from_sweep(
     metric: str | None = None,
     goal: str | None = None,
 ) -> tuple[dict[str, Any], float, str]:
-    """Mejor trial del sweep: ``(overrides, metric_value, run_id)``.
+    """Mejor trial del sweep: (overrides, metric_value, run_id).
 
     Args:
-        sweep_path: ``"entity/project/sweep_id"``.
+        sweep_path: "entity/project/sweep_id".
         metric / goal: por defecto se leen del config del sweep
-            (``metric.name`` / ``metric.goal``); pasarlos los pisa.
+            (metric.name / metric.goal); pasarlos los pisa.
 
-    ``overrides`` son los HP barridos del mejor run (claves planas con punto,
-    listas para `set_nested`). Recorre ``sweep.runs`` y elige por ``run.summary``,
-    así no depende del estado interno de `best_run()` de wandb.
+    overrides son los HP barridos del mejor run (claves planas con punto,
+    listas para set_nested). Recorre sweep.runs y elige por run.summary,
+    así no depende del estado interno de best_run() de wandb.
     """
     import wandb
 
@@ -76,11 +74,11 @@ def top_runs_from_sweep(
     metric: str | None = None,
     goal: str | None = None,
 ) -> list[tuple[dict[str, Any], float, str]]:
-    """Los ``k`` mejores trials del sweep: lista ``[(overrides, metric_value, run_id)]``.
+    """Los k mejores trials del sweep: lista [(overrides, metric_value, run_id)].
 
-    Mismo criterio que `best_run_from_sweep` (lee ``run.summary[metric]`` con el
-    ``metric``/``goal`` del config del sweep, pisable por argumento), pero devuelve el
-    top-``k`` ordenado de mejor a peor. Útil para comparar los mejores modelos de un
+    Mismo criterio que best_run_from_sweep (lee run.summary[metric] con el
+    metric/goal del config del sweep, pisable por argumento), pero devuelve el
+    top-k ordenado de mejor a peor. Útil para comparar los mejores modelos de un
     sweep, no solo el ganador. Saltea runs sin la métrica o sin HP barridos.
     """
     import wandb
@@ -118,7 +116,7 @@ def best_config_from_sweep(
     """Config base + overrides del mejor trial del sweep (listo para evaluar).
 
     Reproduce el trial ganador localmente (mismo merge dot-notation que
-    `scripts/train.py`). Pasáselo a `run_evaluation` / `evaluate_model`.
+    scripts/train.py). Pasáselo a run_evaluation / evaluate_model.
     """
     cfg = load_config(base_config) if isinstance(base_config, str) else copy.deepcopy(base_config)
     overrides, _, _ = best_run_from_sweep(sweep_path, metric=metric, goal=goal)

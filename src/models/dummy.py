@@ -1,7 +1,6 @@
-"""Modelo dummy: predictor por la media (baseline nulo).
+"""Predictor por la media, como piso de comparación.
 
-`fit` guarda la media de `y_train`; `predict` la devuelve para toda fila. Sirve
-para probar el loop completo end-to-end (Fase 0) y como piso de comparación.
+fit guarda la media de y_train y predict la devuelve para toda fila.
 """
 from __future__ import annotations
 

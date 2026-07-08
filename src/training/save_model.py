@@ -12,7 +12,6 @@ import joblib
 from src.eval.splits import LeakageError
 from src.models.registry import REGISTRY
 
-# --- Caché de resultados de evaluación (para el notebook) -------------------
 
 
 def _default_cache_dir() -> Path:
@@ -20,11 +19,11 @@ def _default_cache_dir() -> Path:
 
 
 def results_cache_key(config: dict[str, Any], *, n_boot: int, alpha: float) -> str:
-    """Hash estable de lo que determina el resultado de `run_evaluation`.
+    """Hash estable de lo que determina el resultado de run_evaluation.
 
     Incluye data/cv/model/preprocess/seed + (n_boot, alpha) del bootstrap. Si cambia
-    QUÉ métricas calcula `run_evaluation` (no solo los HP), borrá el caché a mano
-    (``outputs/eval_cache``) o corré con ``USE_CACHE=False`` para forzar el recómputo.
+    QUÉ métricas calcula run_evaluation (no solo los HP), borrá el caché a mano
+    (outputs/eval_cache) o corré con USE_CACHE=False para forzar el recómputo.
     """
     payload = {
         "data": config.get("data"),
@@ -40,7 +39,7 @@ def results_cache_key(config: dict[str, Any], *, n_boot: int, alpha: float) -> s
 
 
 def load_cached_results(key: str, *, cache_dir: str | Path | None = None) -> dict[str, Any] | None:
-    """Devuelve el dict de resultados cacheado para `key`, o ``None`` si no existe."""
+    """Devuelve el dict de resultados cacheado para key, o None si no existe."""
     cache_dir = Path(cache_dir) if cache_dir is not None else _default_cache_dir()
     path = cache_dir / f"{key}.joblib"
     return joblib.load(path) if path.exists() else None
@@ -49,7 +48,7 @@ def load_cached_results(key: str, *, cache_dir: str | Path | None = None) -> dic
 def save_cached_results(
     key: str, results: dict[str, Any], *, cache_dir: str | Path | None = None
 ) -> Path:
-    """Persiste `results` bajo `key`. Devuelve la ruta del archivo escrito."""
+    """Persiste results bajo key. Devuelve la ruta del archivo escrito."""
     cache_dir = Path(cache_dir) if cache_dir is not None else _default_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{key}.joblib"
@@ -57,7 +56,6 @@ def save_cached_results(
     return path
 
 
-# --- Artifacts de modelo ----------------------------------------------------
 
 _MODEL_FILE = "model.bin"
 _META_FILE = "meta.json"
@@ -86,17 +84,16 @@ def save_model_artifact(
     aliases: tuple[str, ...] = ("latest",),
     checkpoints_dir: str | Path | None = None,
 ) -> Path:
-    """Guarda el modelo entrenado: copia local estable + (si hay `run`) wandb Artifact.
+    """Guarda el modelo entrenado: copia local estable + (si hay run) wandb Artifact.
 
-    `model_name` es la clave del registry, necesaria para reconstruir en `load`.
-    `train_years` ata el modelo a su régimen de train (clave anti-leakage): se
-    guarda en metadata y `load_model_artifact` lo verifica. Devuelve el directorio
-    local del modelo (contiene ``model.bin`` + ``meta.json``).
+    model_name es la clave del registry, necesaria para reconstruir en load.
+    train_years ata el modelo a su régimen de train (clave anti-leakage): se
+    guarda en metadata y load_model_artifact lo verifica. Devuelve el directorio
+    local del modelo (contiene model.bin + meta.json).
     """
     base = (Path(checkpoints_dir) if checkpoints_dir is not None else _default_checkpoints_dir()) / name
     base.mkdir(parents=True, exist_ok=True)
 
-    # El modelo decide su propio formato (joblib por default; torch para el AE).
     model.save(base / _MODEL_FILE)
 
     meta: dict[str, Any] = {
@@ -113,8 +110,6 @@ def save_model_artifact(
             if isinstance(v, (int, float)) and not isinstance(v, bool)
         }
     if fitted_params:
-        # Estimaciones del modelo (lambda_0, varianzas REML, esquema de CV interna)
-        # quedan en la metadata para inspeccionarlas sin recargar el modelo.
         meta["fitted_params"] = {
             k: (float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
             for k, v in fitted_params.items()
@@ -149,10 +144,10 @@ def save_ae_artifact(
     aliases: tuple[str, ...] = ("latest",),
     checkpoints_dir: str | Path | None = None,
 ) -> Path:
-    """Guarda un `AutoencoderReducer` entrenado: checkpoint local + wandb Artifact.
+    """Guarda un AutoencoderReducer entrenado: checkpoint local + wandb Artifact.
 
     El AE es un preprocesador (no está en el REGISTRY de modelos), así que tiene su
-    propio formato torch (``ae.pt`` vía ``reducer.save``). `train_years` ata el AE a
+    propio formato torch (ae.pt vía reducer.save). train_years ata el AE a
     su régimen de train (clave anti-leakage; el embedding se ajustó SOLO con esos
     años). La metadata guarda los HP del AE + las métricas de reconstrucción para
     inspeccionar sin bajar el modelo. Devuelve el directorio local del AE.
@@ -196,12 +191,12 @@ def load_ae_artifact(
     run: Any | None = None,
     checkpoints_dir: str | Path | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Carga un AE guardado con `save_ae_artifact`. Devuelve ``(reducer, meta)``.
+    """Carga un AE guardado con save_ae_artifact. Devuelve (reducer, meta).
 
-    Como en `load_model_artifact`, si se pasa `expected_train_years` verifica que
+    Como en load_model_artifact, si se pasa expected_train_years verifica que
     coincidan con los del artifact (anti-leakage: un AE entrenado con otros años
-    proyectaría datos que el fold no debe ver). `ref` puede ser un dir local, un
-    nombre bajo checkpoints/, o ``name:alias`` con un run de wandb activo.
+    proyectaría datos que el fold no debe ver). ref puede ser un dir local, un
+    nombre bajo checkpoints/, o name:alias con un run de wandb activo.
     """
     from src.models.autoencoder import AutoencoderReducer
 
@@ -226,16 +221,16 @@ def load_ae_artifact(
 
 
 def _resolve_model_dir(ref: str | Path, run: Any | None, checkpoints_dir: str | Path | None) -> Path:
-    """Resuelve `ref` a un directorio local con ``model.bin`` + ``meta.json``.
+    """Resuelve ref a un directorio local con model.bin + meta.json.
 
-    `ref` puede ser un directorio/archivo local, un nombre bajo el dir de
-    checkpoints, o (si hay `run`) una referencia de artifact ``name:alias`` que se
-    baja con ``use_artifact``.
+    ref puede ser un directorio/archivo local, un nombre bajo el dir de
+    checkpoints, o (si hay run) una referencia de artifact name:alias que se
+    baja con use_artifact.
     """
     p = Path(ref)
     if p.is_dir():
         return p
-    if p.exists():  # archivo suelto => su carpeta
+    if p.exists():
         return p.parent
 
     base = Path(checkpoints_dir) if checkpoints_dir is not None else _default_checkpoints_dir()
@@ -260,11 +255,11 @@ def load_model_artifact(
     run: Any | None = None,
     checkpoints_dir: str | Path | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Carga un modelo guardado con `save_model_artifact`. Devuelve ``(model, meta)``.
+    """Carga un modelo guardado con save_model_artifact. Devuelve (model, meta).
 
-    Si `expected_train_years` se pasa (los años de train del fold donde se va a
+    Si expected_train_years se pasa (los años de train del fold donde se va a
     reusar el modelo), verifica que coincidan con los del artifact; si no, levanta
-    `LeakageError`.
+    LeakageError.
     """
     base = _resolve_model_dir(ref, run, checkpoints_dir)
     meta_path = base / _META_FILE
