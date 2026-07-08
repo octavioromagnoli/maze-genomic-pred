@@ -1,17 +1,15 @@
 """Cierre 2020 con spike-in: rescatar la predicción de rinde del colapso cold-start.
 
-Predecir 2020 con un modelo entrenado solo en dev (2017-2019) COLAPSA para GY (Pearson negativo):
-2020 no comparte líneas con dev (cero overlap de GID) y la sequía derivó. El *spike-in* modela el
-escenario real de despliegue: fenotipar una **fracción chica** de líneas del ciclo nuevo (2020) y
-sumarlas al train. Este harness mide cuánto rescata.
+Predecir 2020 con un modelo entrenado solo en dev (2017-2019) colapsa para GY: 2020 no
+comparte líneas con dev y la sequía derivó. El spike-in modela el escenario real:
+fenotipar una fracción chica de líneas del ciclo nuevo y sumarlas al train.
 
-Protocolo (toca 2020 — es el CIERRE, regla 3): para una fracción ``s``, se eligen al azar (semilla
-``rep``) ``s``·|2020| líneas de 2020, se agregan al train CON su fenotipo, y se predicen las líneas
-de 2020 **restantes** (held-out, nunca vistas). Preprocesamiento del modelo ajustado train-only sobre
-el train aumentado (regla 1). ``s=0`` es el cold-start puro (determinista ⇒ una sola realización).
+Para una fracción s se eligen al azar (semilla rep) s*|2020| líneas de 2020, se agregan
+al train con su fenotipo y se predicen las restantes (held-out). El preproceso se ajusta
+train-only sobre el train aumentado. s=0 es el cold-start puro (determinista).
 
-Reusa los helpers de `noise.py` (`_build_arrays`/`_fit`/`_predict_heads`) para despachar single-task
-(GBLUP) vs multitask (MoE). Devuelve filas ``{model, train, spike, rep, pearson, n_held, n_spike}``.
+Reusa los helpers de noise.py para despachar single-task (GBLUP) vs multitask (MoE).
+Devuelve filas {model, train, spike, rep, pearson, n_held, n_spike}.
 """
 from __future__ import annotations
 
@@ -55,7 +53,7 @@ def spike_closure(
 
     rows: list[dict[str, Any]] = []
     for s in spike_fracs:
-        reps_use = (reps[0],) if s <= 0 else reps   # s=0 es determinista (nadie spikeado)
+        reps_use = (reps[0],) if s <= 0 else reps
         n_spike = int(round(float(s) * test_idx.size))
         for rep in reps_use:
             rng = np.random.default_rng(int(rep))
@@ -63,10 +61,10 @@ def spike_closure(
             spiked_mask = np.zeros(year.size, dtype=bool)
             spiked_mask[spiked] = True
             held_mask = test & ~spiked_mask
-            tr_mask = dev | spiked_mask               # dev + líneas 2020 spikeadas (con fenotipo)
+            tr_mask = dev | spiked_mask
 
             model = build_model(cfg)
-            _fit(model, X[tr_mask], arrays, tr_mask, heads, multitask)   # preproc train-only (aumentado)
+            _fit(model, X[tr_mask], arrays, tr_mask, heads, multitask)
             yp = _predict_heads(model, X[held_mask], heads, multitask, [target_head])[target_head]
             if multitask:
                 yt = arrays.Y[held_mask][:, col]

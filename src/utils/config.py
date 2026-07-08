@@ -1,7 +1,7 @@
 """Carga de configs YAML.
 
 Los hiperparámetros se cambian en el YAML, NUNCA editando código. El config se
-carga como `dict` plano (serializable, va tal cual a `wandb.config`) y se accede
+carga como dict plano (serializable, va tal cual a wandb.config) y se accede
 con helpers para defaults anidados.
 """
 from __future__ import annotations
@@ -35,11 +35,11 @@ def cfg_get(cfg: dict[str, Any], dotted_key: str, default: Any = None) -> Any:
 
 
 def set_nested(cfg: dict[str, Any], dotted_key: str, value: Any) -> None:
-    """Setea ``cfg['a']['b']['c'] = value`` para ``dotted_key='a.b.c'``.
+    """Setea cfg['a']['b']['c'] = value para dotted_key='a.b.c'.
 
-    Crea los dicts intermedios que falten. Inversa de `cfg_get`. Lo usa
-    `scripts/train.py` para aplicar los overrides de un sweep de wandb (que
-    llegan como claves planas con punto en `run.config`) sobre el config anidado.
+    Crea los dicts intermedios que falten. Inversa de cfg_get. Lo usa
+    scripts/train.py para aplicar los overrides de un sweep de wandb (que
+    llegan como claves planas con punto en run.config) sobre el config anidado.
     """
     parts = dotted_key.split(".")
     node = cfg

@@ -1,18 +1,12 @@
 """Figuras reutilizables del notebook de comparación de modelos (IC por bootstrap).
 
-Centraliza los gráficos para respetar la convención del proyecto (los notebooks solo
-importan y llaman funciones de ``src/``) y para que cada sección del notebook pueda
-levantarlos con un solo import y correr de forma independiente. Todas las funciones
-**devuelven el ``Figure``** (no lo guardan): el notebook decide dónde hacer ``savefig``.
+Vive acá (no en el notebook) para que cada sección se levante con un solo import. Todas
+las funciones devuelven el Figure, no lo guardan: el notebook decide el savefig.
 
-Dos formas de entrada, según lo que tengas a mano:
-
-- ``df`` tidy con columnas ``[model, metric, point, lo, hi]`` (lo que arman
-  ``evaluate_model`` / :func:`src.eval.ensemble.bootstrap_table`) ⇒ :func:`plot_ci`,
-  :func:`plot_metric_vs_param`.
-- ``samples_by_model = {model: {metric: muestras_bootstrap}}`` ⇒ :func:`plot_box` y
-  :func:`plot_paired_diff` (la diferencia pareada vs una referencia, que es lo que mide
-  significancia: misma seed/grupo en el bootstrap ⇒ el ruido compartido del val se cancela).
+Acepta dos entradas: un df tidy [model, metric, point, lo, hi] (plot_ci,
+plot_metric_vs_param) o samples_by_model = {model: {metric: muestras_bootstrap}}
+(plot_box y plot_paired_diff, la diferencia pareada vs una referencia con la misma
+seed/grupo para que el ruido compartido del val se cancele).
 """
 from __future__ import annotations
 
@@ -24,7 +18,7 @@ import numpy as np
 
 
 def _label_kw() -> str:
-    """``tick_labels`` (matplotlib >= 3.9) vs ``labels`` (versiones viejas) para boxplot."""
+    """tick_labels (matplotlib >= 3.9) vs labels (versiones viejas) para boxplot."""
     return "tick_labels" if tuple(map(int, mpl.__version__.split(".")[:2])) >= (3, 9) else "labels"
 
 
@@ -35,7 +29,7 @@ def _metrics_of(df, metrics: Sequence[str] | None) -> list[str]:
 
 def plot_ci(df, metrics: Sequence[str] | None = None, *,
             title: str = "Estimación puntual ± IC95% (bootstrap)", color: str = "tab:blue"):
-    """Un subplot por métrica; cada modelo como punto con bigotes ``[lo, hi]`` (IC95%)."""
+    """Un subplot por métrica; cada modelo como punto con bigotes [lo, hi] (IC95%)."""
     metrics = _metrics_of(df, metrics)
     fig, axes = plt.subplots(1, len(metrics), figsize=(4.5 * len(metrics), 4))
     for ax, m in zip(np.atleast_1d(axes), metrics):
@@ -43,7 +37,6 @@ def plot_ci(df, metrics: Sequence[str] | None = None, *,
         x = np.arange(len(sub))
         point = sub["point"].to_numpy(float)
         lo, hi = sub["lo"].to_numpy(float), sub["hi"].to_numpy(float)
-        # yerr no-negativo (el punto puede caer fuera del IC en distribuciones sesgadas).
         yerr = np.vstack([np.maximum(point - lo, 0), np.maximum(hi - point, 0)])
         ax.errorbar(x, point, yerr=yerr, fmt="o", capsize=5, lw=1.5, color=color)
         ax.set_xticks(x)
@@ -57,7 +50,7 @@ def plot_ci(df, metrics: Sequence[str] | None = None, *,
 
 def plot_box(samples_by_model: Mapping[str, Mapping[str, np.ndarray]], metric: str, *,
              whis: tuple[float, float] = (2.5, 97.5), title: str | None = None):
-    """Boxplot de la distribución bootstrap de ``metric``. ``whis=(2.5, 97.5)`` ⇒ bigotes = IC95%."""
+    """Boxplot de la distribución bootstrap de metric. whis=(2.5, 97.5) => bigotes = IC95%."""
     models = [k for k, s in samples_by_model.items() if np.isfinite(s[metric]).any()]
     data = [np.asarray(s[metric])[np.isfinite(s[metric])]
             for s in samples_by_model.values() if np.isfinite(s[metric]).any()]
@@ -76,13 +69,13 @@ def plot_box(samples_by_model: Mapping[str, Mapping[str, np.ndarray]], metric: s
 def plot_paired_diff(samples_by_model: Mapping[str, Mapping[str, np.ndarray]],
                      ref: str | None = None, metrics: Sequence[str] | None = None, *,
                      title: str | None = None):
-    """Boxplot de la DIFERENCIA pareada ``(modelo − referencia)`` por métrica.
+    """Boxplot de la DIFERENCIA pareada (modelo − referencia) por métrica.
 
-    Cada caja = ``muestras_modelo − muestras_ref`` sobre el MISMO resample (misma
-    seed/grupo en el bootstrap) ⇒ el ruido compartido de qué líneas caen en val se
+    Cada caja = muestras_modelo − muestras_ref sobre el MISMO resample (misma
+    seed/grupo en el bootstrap) => el ruido compartido de qué líneas caen en val se
     cancela. Si la caja/bigotes (IC95%) NO cruzan el 0 (rojo) la diferencia es
-    significativa. Signo: ``pearson_r``/``r2``/``matching20`` > 0 ⇒ el modelo le gana;
-    ``rmse`` < 0 ⇒ le gana (menos error). ``ref`` por defecto = primer modelo del dict.
+    significativa. Signo: pearson_r/r2/matching20 > 0 => el modelo le gana;
+    rmse < 0 => le gana (menos error). ref por defecto = primer modelo del dict.
     """
     names = list(samples_by_model)
     ref = names[0] if ref is None else ref
@@ -100,7 +93,7 @@ def plot_paired_diff(samples_by_model: Mapping[str, Mapping[str, np.ndarray]],
         ax.boxplot(data, whis=(2.5, 97.5), showfliers=False)
         ax.set_xticks(range(1, len(others) + 1))
         ax.set_xticklabels(others, rotation=25, ha="right")
-        ax.axhline(0, color="red", ls="--", lw=1)          # 'sin diferencia'
+        ax.axhline(0, color="red", ls="--", lw=1)
         ax.set_title(f"{m}: modelo − referencia")
         ax.grid(True, axis="y", alpha=0.3)
     fig.suptitle(title or f"Diferencia pareada vs '{ref}' — caja que NO cruza 0 (rojo) ⇒ significativa",
@@ -114,11 +107,11 @@ def plot_metric_vs_param(df, param_by_model: Mapping[str, float],
                          ref_lines: Mapping[str, Mapping[str, float]] | None = None,
                          xlabel: str = "parámetro", title: str | None = None,
                          color: str = "tab:blue"):
-    """Una línea por métrica vs un parámetro continuo (p.ej. ``mse_weight``) con banda IC95%.
+    """Una línea por métrica vs un parámetro continuo (p.ej. mse_weight) con banda IC95%.
 
-    ``df``: tidy ``[model, metric, point, lo, hi]``. ``param_by_model``: ``{model: x}`` para
-    los modelos que van sobre la curva (los que no estén acá se ignoran ⇒ permite dejar
-    afuera baselines como GBLUP). ``ref_lines``: ``{metric: {label: valor}}`` ⇒ líneas
+    df: tidy [model, metric, point, lo, hi]. param_by_model: {model: x} para
+    los modelos que van sobre la curva (los que no estén acá se ignoran => permite dejar
+    afuera baselines como GBLUP). ref_lines: {metric: {label: valor}} => líneas
     horizontales de referencia por subplot (p.ej. el baseline GBLUP y el loss puro).
     """
     metrics = _metrics_of(df, metrics)
@@ -149,7 +142,7 @@ def plot_allele_freq(maf_real: np.ndarray, maf_synth: np.ndarray, *,
                      title: str | None = None, color: str = "tab:blue"):
     """Scatter de frecuencia alélica por SNP real vs sintética (calidad de generación).
 
-    Cada punto es un SNP: ``x`` = frecuencia del alelo 1 en los datos reales, ``y`` = en
+    Cada punto es un SNP: x = frecuencia del alelo 1 en los datos reales, y = en
     los sintéticos. La diagonal (rojo) es el ideal: cuanto más pegada, mejor reproduce la
     generación la estructura marginal de los marcadores. El título reporta la correlación.
     """

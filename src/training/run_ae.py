@@ -1,22 +1,14 @@
 """Entrenamiento del autoencoder de SNPs (no supervisado), separado del supervisado.
 
-Por qué un runner propio y no `run_evaluation`: el AE se optimiza por **BCE de
-reconstrucción** (no por la métrica downstream), es no supervisado y no tiene folds
-de target. `run_evaluation` es el harness supervisado (Pearson por fold); meter ahí
-el AE lo desvirtuaría. El downstream (GBLUP/XGBoost sobre el embedding) sí sigue
-usando `scripts/train.py` + `preprocess.autoencoder`. Así que el único entrypoint
-supervisado sigue siendo `train.py`; `scripts/train_ae.py` es el del compresor.
+El AE se optimiza por BCE de reconstrucción, es no supervisado y no tiene folds de
+target, así que tiene su propio runner en vez de pasar por run_evaluation (el harness
+supervisado por Pearson). El downstream (GBLUP/XGBoost sobre el embedding) sí sigue
+usando scripts/train.py + preprocess.autoencoder.
 
-Régimen temporal (reglas 1 y 3): el AE se entrena con ``cv.train_years`` (p.ej.
-2017) y se valida la reconstrucción en un holdout que NO es el val externo del
-downstream:
-- ``cv.val_scheme: temporal`` → BCE sobre ``cv.val_year`` (p.ej. 2018), el año
-  siguiente al train (mismo split 2017→2018 que usan GBLUP/XGB internamente). Deja
-  2019/2020 intactos.
-- ``cv.val_scheme: holdout_lines`` → held-out por LÍNEA dentro del train (lo hace el
-  propio reducer con ``autoencoder.val_frac``). Útil al cierre, cuando el train es
-  todo el dev y no hay "año siguiente" disponible.
-``holdout_test_year`` (2020) se excluye siempre.
+El AE se entrena con cv.train_years y valida la reconstrucción en un holdout que no es
+el val externo del downstream: con val_scheme=temporal, BCE sobre cv.val_year (el año
+siguiente al train); con val_scheme=holdout_lines, un held-out por línea dentro del
+train (útil al cierre, cuando el train es todo el dev). 2020 se excluye siempre.
 """
 from __future__ import annotations
 
@@ -32,7 +24,7 @@ LogFn = Callable[[dict[str, Any]], None]
 
 
 def _train_only_idx(year: np.ndarray, train_years, holdout_test_year) -> np.ndarray:
-    """Índices de filas cuyos años están en ``train_years`` (excluye el holdout)."""
+    """Índices de filas cuyos años están en train_years (excluye el holdout)."""
     year = np.asarray(year)
     sel = {int(y) for y in train_years}
     if holdout_test_year is not None:
@@ -48,12 +40,12 @@ def run_ae_training(
 ) -> dict[str, Any]:
     """Entrena el AE y devuelve métricas de reconstrucción (+ el reducer si se pide).
 
-    Config consumido: ``data.{geno_csv,pheno_csv,target,env}``,
-    ``cv.{train_years,val_scheme,val_year,holdout_test_year}``,
-    ``preprocess.autoencoder`` (HP del AE), ``seed``.
+    Config consumido: data.{geno_csv,pheno_csv,target,env},
+    cv.{train_years,val_scheme,val_year,holdout_test_year},
+    preprocess.autoencoder (HP del AE), seed.
 
-    Devuelve ``{fitted, n_train, n_val, train_years, val_year, val_scheme}`` y, con
-    ``return_reducer=True``, además ``reducer`` (el ``AutoencoderReducer`` entrenado).
+    Devuelve {fitted, n_train, n_val, train_years, val_year, val_scheme} y, con
+    return_reducer=True, además reducer (el AutoencoderReducer entrenado).
     """
     data_cfg = config.get("data", {})
     cv_cfg = config.get("cv", {})
@@ -73,7 +65,6 @@ def run_ae_training(
     htest = cv_cfg.get("holdout_test_year")
     val_scheme = str(cv_cfg.get("val_scheme", "temporal")).lower()
 
-    # El reducer hereda la seed del experimento si su sub-bloque no la fija.
     ae_params = dict(ae_cfg)
     ae_params.setdefault("seed", seed)
     reducer = AutoencoderReducer(ae_params)
@@ -96,7 +87,7 @@ def run_ae_training(
                 f"Split vacío: train_years={train_years} no es anterior a val_year={val_year}."
             )
         (tr, va), = splits
-        assert_no_line_leakage(tr, va, arr.line_id)  # guard duro (regla 2)
+        assert_no_line_leakage(tr, va, arr.line_id)
         reducer.set_fit_context(
             line_id=arr.line_id[tr], year=arr.year[tr],
             X_val=arr.X[va], line_id_val=arr.line_id[va],
@@ -108,9 +99,9 @@ def run_ae_training(
         if len(tr) == 0:
             raise ValueError(f"Sin filas de train para train_years={train_years}.")
         reducer.set_fit_context(line_id=arr.line_id[tr], year=arr.year[tr])
-        reducer.fit(arr.X[tr])  # el reducer hace su held-out por línea (val_frac)
+        reducer.fit(arr.X[tr])
         n_train = int(len(tr))
-        n_val = None  # lo reporta fitted['ae_has_val'] / val_frac
+        n_val = None
         val_year = None
     else:
         raise ValueError(f"cv.val_scheme desconocido: {val_scheme!r} (temporal|holdout_lines).")

@@ -1,10 +1,10 @@
 """Preprocesamiento train-only de SNPs.
 
-`SNPPreprocessor` aprende todo (qué columnas conservar por MAF, y stats de
-estandarización) en `fit(X_train)` y lo aplica con `transform`. Se compone con
-cualquier modelo vía `src.models.registry.PreprocessedModel`, así no se reescribe
+SNPPreprocessor aprende todo (qué columnas conservar por MAF, y stats de
+estandarización) en fit(X_train) y lo aplica con transform. Se compone con
+cualquier modelo vía src.models.registry.PreprocessedModel, así no se reescribe
 el preprocesamiento por cada modelo: un modelo nuevo solo declara un bloque
-`preprocess:` en su YAML.
+preprocess: en su YAML.
 """
 
 from __future__ import annotations
@@ -20,63 +20,61 @@ def ld_prune_mask(
     """Poda por desequilibrio de ligamiento (LD) sobre los SNPs de TRAIN (vectorizada en NumPy).
 
     Recorre los SNPs en orden (proxy de posición genómica = orden de columnas) con una **ventana
-    deslizante** de ``window_size`` marcadores y descarta el SNP que tenga ``r² > r2_threshold`` con
+    deslizante** de window_size marcadores y descarta el SNP que tenga r² > r2_threshold con
     ALGÚN SNP ya conservado dentro de la ventana (greedy indep-pairwise, estilo PLINK
-    ``--indep-pairwise``). Devuelve una **máscara booleana** ``(p,)`` (True = conservado).
+    --indep-pairwise). Devuelve una máscara booleana (p,) (True = conservado).
 
-    ``window_size <= 0`` ⇒ modo **global** (ventana = panel entero): cada SNP se compara contra TODOS
+    window_size <= 0 => modo global (ventana = panel entero): cada SNP se compara contra TODOS
     los conservados. Útil cuando las columnas NO están ordenadas por posición genómica (p.ej. IDs de
     marcador arbitrarios), donde una ventana chica no captura el LD porque los SNPs co-heredados no son
-    columnas vecinas. Más caro (O(p·conservados·n)) pero capta la redundancia sin importar el orden.
+    columnas vecinas. Más caro (O(p*conservados*n)) pero capta la redundancia sin importar el orden.
 
-    Eficiencia: se estandarizan las columnas una sola vez (``z = (x-media)/desvío`` con stats de
-    train), de modo que la correlación de Pearson es el producto interno normalizado ``(z_j·z_k)/n``;
-    cada SNP se compara contra las ≤``window_size`` columnas conservadas de la ventana con un solo
-    producto matriz-vector. Los SNPs constantes (desvío 0) quedan en 0 ⇒ correlación 0 ⇒ se conservan.
-    Se computa SOLO con train; la máscara se guarda y se aplica idéntica a val/test (`LDPruner`).
+    Eficiencia: se estandarizan las columnas una sola vez (z = (x-media)/desvío con stats de
+    train), de modo que la correlación de Pearson es el producto interno normalizado (z_j*z_k)/n;
+    cada SNP se compara contra las ≤window_size columnas conservadas de la ventana con un solo
+    producto matriz-vector. Los SNPs constantes (desvío 0) quedan en 0 => correlación 0 => se conservan.
+    Se computa SOLO con train; la máscara se guarda y se aplica idéntica a val/test (LDPruner).
 
-    Alternativa equivalente con dependencia extra: ``skallel.locate_unlinked`` de scikit-allel.
+    Alternativa equivalente con dependencia extra: skallel.locate_unlinked de scikit-allel.
     """
     X = np.asarray(X, dtype=np.float64)
     n, p = X.shape
     if p == 0:
         return np.zeros(0, dtype=bool)
-    w = int(window_size) if int(window_size) > 0 else p  # <=0 => global (ventana = panel entero)
+    w = int(window_size) if int(window_size) > 0 else p
     thr = float(r2_threshold)
 
-    # Estandarización train-only por columna: corr(a,b) = (z_a·z_b)/n con z de media 0 y desvío 1.
     mean = X.mean(axis=0)
     std = X.std(axis=0)
     nz = std > 0
     Z = np.zeros_like(X)
-    Z[:, nz] = (X[:, nz] - mean[nz]) / std[nz]  # columnas constantes -> 0 (corr 0, siempre conservadas)
+    Z[:, nz] = (X[:, nz] - mean[nz]) / std[nz]
 
     keep = np.zeros(p, dtype=bool)
-    win: list[int] = []  # índices conservados dentro de la ventana (posiciones >= j - w + 1)
+    win: list[int] = []
     for j in range(p):
-        # Saca de la ventana los conservados que quedaron a >= w posiciones de distancia.
         while win and j - win[0] >= w:
             win.pop(0)
         if win:
-            r = (Z[:, win].T @ Z[:, j]) / n      # (len(win),) correlaciones contra los conservados
+            r = (Z[:, win].T @ Z[:, j]) / n
             if np.any(r * r > thr):
-                continue                         # redundante en la ventana -> se descarta
+                continue
         keep[j] = True
         win.append(j)
     return keep
 
 
 class LDPruner:
-    """Paso de preprocesamiento train-only que poda SNPs por LD (ver `ld_prune_mask`).
+    """Paso de preprocesamiento train-only que poda SNPs por LD (ver ld_prune_mask).
 
-    `fit(X_train)` aprende la máscara de SNPs conservados; `transform` la aplica (a train o
-    val/test) seleccionando exactamente las mismas columnas ⇒ las dimensiones coinciden al proyectar
-    después en el PCA. Pensado para anteponerse a `SNPPreprocessor`/`PCAReducer` en la cadena de
+    fit(X_train) aprende la máscara de SNPs conservados; transform la aplica (a train o
+    val/test) seleccionando exactamente las mismas columnas => las dimensiones coinciden al proyectar
+    después en el PCA. Pensado para anteponerse a SNPPreprocessor/PCAReducer en la cadena de
     gating del MoE (poda antes del PCA), sin tocar los SNPs que ven los expertos.
 
     Args:
         window_size: tamaño de la ventana deslizante en nº de SNPs (default 50).
-        r2_threshold: umbral de ``r²`` para considerar redundante un par (default 0.5).
+        r2_threshold: umbral de r² para considerar redundante un par (default 0.5).
     """
 
     def __init__(self, window_size: int = 50, r2_threshold: float = 0.5) -> None:
@@ -121,9 +119,9 @@ class SNPPreprocessor:
     """Filtro de MAF (+ estandarización opcional), ajustado solo con el train.
 
     Args:
-        maf_threshold: conserva SNPs con ``MAF >= maf_threshold`` (calculado en
-            train). ``0`` = no filtra.
-        standardize: si ``True``, centra y escala por-SNP (z-score) con la media
+        maf_threshold: conserva SNPs con MAF >= maf_threshold (calculado en
+            train). 0 = no filtra.
+        standardize: si True, centra y escala por-SNP (z-score) con la media
             y el desvío del train.
     """
 
@@ -134,9 +132,9 @@ class SNPPreprocessor:
 
     def fit(self, X: np.ndarray, y: Any = None) -> "SNPPreprocessor":
         X = np.asarray(X, dtype=np.float64)
-        freq = X.mean(axis=0)                      # frec. del alelo '1' en train
+        freq = X.mean(axis=0)
         maf = np.minimum(freq, 1.0 - freq)
-        self.keep_ = maf >= self.maf_threshold     # máscara de columnas (aprendida en train)
+        self.keep_ = maf >= self.maf_threshold
         if not self.keep_.any():
             raise ValueError(f"maf_threshold={self.maf_threshold} dejó 0 SNPs.")
         if self.standardize:
@@ -165,23 +163,23 @@ class SNPPreprocessor:
 
 
 class PCAReducer:
-    """Reducción de dimensionalidad por PCA, ajustada SOLO con train (regla 1).
+    """Reducción de dimensionalidad por PCA, ajustada con el train.
 
-    Envuelve `sklearn.decomposition.PCA`. `fit` aprende los componentes con el
-    train del fold; `transform` proyecta cualquier set (val/test) sobre esos
+    Envuelve sklearn.decomposition.PCA. fit aprende los componentes con el
+    train del fold; transform proyecta cualquier set (val/test) sobre esos
     mismos componentes. sklearn centra internamente con la media de train; para
     z-score por-SNP antes del PCA (recomendado para los lineales), anteponer
-    `SNPPreprocessor(standardize=True)` en la cadena.
+    SNPPreprocessor(standardize=True) en la cadena.
 
-    La dimensión latente (`n_components`) es el HP a barrer para elegirla por
+    La dimensión latente (n_components) es el HP a barrer para elegirla por
     desempeño downstream en vez de por % de varianza explicada.
 
     Args:
         n_components: componentes a retener. Se clampea a ``min(n_samples,
             n_features)`` del train (no se pueden pedir más).
-        whiten: si ``True``, escala cada componente a varianza unitaria.
-        svd_solver: solver de sklearn. ``"full"`` (default) es determinista;
-            ``"randomized"`` es más rápido en p grande pero usa ``random_state``.
+        whiten: si True, escala cada componente a varianza unitaria.
+        svd_solver: solver de sklearn. "full" (default) es determinista;
+            "randomized" es más rápido en p grande pero usa random_state.
         random_state: semilla del solver randomized (reproducibilidad).
     """
 
@@ -202,7 +200,6 @@ class PCAReducer:
         from sklearn.decomposition import PCA
 
         X = np.asarray(X, dtype=np.float64)
-        # No se pueden pedir más componentes que el rango de la matriz de train.
         k = min(self.n_components, min(X.shape))
         self.n_components_ = int(k)
         self.pca_ = PCA(
@@ -234,18 +231,18 @@ class PCAReducer:
 
 
 class PLSReducer:
-    """Reducción de dimensionalidad **supervisada** por PLS, ajustada SOLO con train (regla 1).
+    """Reducción de dimensionalidad supervisada por PLS, ajustada con el train.
 
-    A diferencia del PCA (no supervisado, solo mira ``X``), PLS busca los componentes que maximizan la
-    **covarianza entre los SNPs ``X`` y el fenotipo ``y``** ⇒ un espacio latente lineal orientado a
-    separar las líneas por potencial fenotípico (p.ej. rendimiento), no solo por la mayor varianza
-    genómica. `fit(X, y)` aprende las direcciones con el train (``y`` puede ser 1-D o multi-target
-    ``(n, T)``); `transform(X)` proyecta cualquier set (val/test) SOLO desde ``X`` (sin fenotipos de
-    test). Pensado para reemplazar al `PCAReducer` en la cadena de gating del MoE.
+    A diferencia del PCA (no supervisado, solo mira X), PLS busca los componentes que
+    maximizan la covarianza entre los SNPs X y el fenotipo y, dando un espacio latente
+    orientado a separar las líneas por potencial fenotípico y no solo por varianza
+    genómica. fit(X, y) aprende las direcciones con el train (y puede ser 1-D o
+    multi-target (n, T)); transform(X) proyecta cualquier set solo desde X. Pensado para
+    reemplazar al PCAReducer en la cadena de gating del MoE.
 
     Args:
-        n_components: componentes latentes a retener (se clampea a ``min(n_samples, n_features)``).
-        scale: estandariza ``X``/``Y`` internamente (default True; recomendado por los distintos
+        n_components: componentes latentes a retener (se clampea a min(n_samples, n_features)).
+        scale: estandariza X/Y internamente (default True; recomendado por los distintos
             rangos de los traits en el caso multi-target).
     """
 
@@ -271,7 +268,7 @@ class PLSReducer:
     def transform(self, X: np.ndarray) -> np.ndarray:
         if not hasattr(self, "pls_"):
             raise RuntimeError("PLSReducer.transform llamado antes de fit.")
-        return self.pls_.transform(np.asarray(X, dtype=np.float64))  # proyección desde X (train components)
+        return self.pls_.transform(np.asarray(X, dtype=np.float64))
 
     def fit_transform(self, X: np.ndarray, y: Any = None) -> np.ndarray:
         return self.fit(X, y).transform(X)
@@ -283,11 +280,11 @@ class PLSReducer:
 class PreprocChain:
     """Cadena de pasos de preprocesamiento, todos train-only.
 
-    `fit_transform` ajusta y aplica en orden sobre el train; `transform` aplica
+    fit_transform ajusta y aplica en orden sobre el train; transform aplica
     (sin re-ajustar) sobre val/test. Expone la interfaz que espera
-    `PreprocessedModel` (`fit_transform`/`transform`) y mergea los
-    `get_fitted_params` de cada paso que los exponga (p.ej. n_kept del filtro MAF
-    y n_components/varianza del PCA → se logean por fold a wandb).
+    PreprocessedModel (fit_transform/transform) y mergea los
+    get_fitted_params de cada paso que los exponga (p.ej. n_kept del filtro MAF
+    y n_components/varianza del PCA -> se logean por fold a wandb).
     """
 
     def __init__(self, steps: list) -> None:
@@ -321,19 +318,19 @@ class PreprocChain:
 
 
 def build_preprocessor(cfg: dict[str, Any] | None):
-    """Construye el preprocesamiento train-only desde el bloque `preprocess`.
+    """Construye el preprocesamiento train-only desde el bloque preprocess.
 
     Arma una cadena en orden: (1) filtro MAF + estandarización por-SNP
-    (`SNPPreprocessor`) si se pide; (2) un reductor de dimensionalidad si hay
-    sub-bloque `pca` (`PCAReducer`) **o** `autoencoder` (`AutoencoderReducer`).
-    Devuelve el único paso si hay uno solo, un `PreprocChain` si hay varios, o
-    ``None`` si no hay nada que hacer. Mantiene compatibilidad con los configs que
-    solo declaran `maf_threshold`/`standardize`.
+    (SNPPreprocessor) si se pide; (2) un reductor de dimensionalidad si hay
+    sub-bloque pca (PCAReducer) o autoencoder (AutoencoderReducer).
+    Devuelve el único paso si hay uno solo, un PreprocChain si hay varios, o
+    None si no hay nada que hacer. Mantiene compatibilidad con los configs que
+    solo declaran maf_threshold/standardize.
 
-    `pca` y `autoencoder` son mutuamente excluyentes (dos compresores no se
-    encadenan). El autoencoder exige SNPs binarios (regla 4: BCE), así que NO se
-    le antepone `standardize` (el z-score lo hace después GBLUP internamente); su
-    filtro MAF va dentro del propio reducer (`autoencoder.maf_threshold`).
+    pca y autoencoder son mutuamente excluyentes (dos compresores no se encadenan). El
+    autoencoder exige SNPs binarios (BCE), así que no se le antepone standardize (el
+    z-score lo hace después GBLUP); su filtro MAF va dentro del propio reducer
+    (autoencoder.maf_threshold).
     """
     if not cfg:
         return None
@@ -343,17 +340,15 @@ def build_preprocessor(cfg: dict[str, Any] | None):
     if pca_cfg and ae_cfg:
         raise ValueError("preprocess: 'pca' y 'autoencoder' son excluyentes (dos compresores).")
 
-    # --- Autoencoder: compresor autocontenido (su MAF va adentro) -----------
     if ae_cfg:
         if cfg.get("standardize", False):
             raise ValueError(
                 "No uses standardize antes del autoencoder: rompe la binariedad de "
                 "los SNPs (regla 4, BCE). El z-score va después (lo hace GBLUP)."
             )
-        from src.models.autoencoder import AutoencoderReducer  # import diferido (torch)
+        from src.models.autoencoder import AutoencoderReducer
 
         ae_params = dict(ae_cfg)
-        # MAF declarado a nivel `preprocess` se delega al reducer si no lo trae él.
         if cfg.get("maf_threshold") and "maf_threshold" not in ae_params:
             ae_params["maf_threshold"] = cfg["maf_threshold"]
         return AutoencoderReducer(ae_params)

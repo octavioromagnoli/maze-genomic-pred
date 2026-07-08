@@ -10,7 +10,7 @@ import torch
 def set_seed(seed: int) -> None:
     """Fija las seeds de los RNG relevantes de forma determinística.
 
-    Cubre `random`, `numpy` y, si está disponible, `torch` (CPU y CUDA). No
+    Cubre random, numpy y, si está disponible, torch (CPU y CUDA). No
     devuelve nada: es un efecto de lado intencional al inicio de cada corrida.
     """
     seed = int(seed)
@@ -22,14 +22,13 @@ def set_seed(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    # Determinismo en cuDNN para reproducibilidad estricta 
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 
 
 def make_rng(seed: int) -> np.random.Generator:
-    """Devuelve un `Generator` de numpy con seed explícita.
+    """Devuelve un Generator de numpy con seed explícita.
 
     Preferido frente al RNG global cuando se necesita aleatoriedad local y
     reproducible (p. ej. generación de datos sintéticos).

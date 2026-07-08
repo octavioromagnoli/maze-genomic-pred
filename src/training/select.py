@@ -1,17 +1,13 @@
-"""Selección de hiperparámetros por holdout temporal INTERNO (nested), sin sesgo.
+"""Selección de hiperparámetros por holdout temporal interno (nested), sin sesgo.
 
-El problema: si elegís un HP (p.ej. la dim de PCA) maximizando la métrica sobre el
-mismo val externo (2019) con el que después comparás/reportás, el número del
-ganador está inflado (winner's curse): lo elegiste para que le vaya bien ahí.
+Elegir un HP (p.ej. la dim de PCA) maximizando la métrica sobre el mismo val externo
+(2019) con el que después se compara infla el número del ganador (winner's curse). Acá
+el HP se elige en un holdout anterior (inner-val), entrenando con los años previos, y el
+val externo (que esta función no toca) queda limpio para una comparación justa contra
+modelos sin ese HP.
 
-La solución honesta: elegir el HP en un holdout **anterior** (inner-val), entrenando
-con los años previos a ese, y recién evaluar el HP elegido en el val externo (que
-esta función NO toca). Respeta el orden temporal (regla 3) y deja el val externo
-limpio para una comparación justa contra modelos sin ese HP (p.ej. el baseline).
-
-Reutiliza el splitter del proyecto (`fixed_temporal_split`) y el preprocesamiento
-train-only vía `build_model`, así no se reimplementa nada ni se mete leakage.
-General para cualquier HP entero (PCA dim, latente del AE, ...) vía `dim_key`.
+Reusa fixed_temporal_split y el preproceso train-only de build_model. General para
+cualquier HP entero (dim de PCA, latente del AE, ...) vía dim_key.
 """
 from __future__ import annotations
 
@@ -31,17 +27,17 @@ def nested_temporal_dim_select(
     metric: str = "pearson_r",
     skip_dims_geq_inner_n: bool = True,
 ) -> dict[str, Any]:
-    """Elige el mejor valor de `dim_key` en un inner-val temporal, sin tocar el val externo.
+    """Elige el mejor valor de dim_key en un inner-val temporal, sin tocar el val externo.
 
     Args:
         base_config: ruta o dict del experimento (de ahí salen data/seed/preprocess/model).
-        dim_key: clave dot-notation del HP a elegir (p.ej. ``"preprocess.pca.n_components"``).
+        dim_key: clave dot-notation del HP a elegir (p.ej. "preprocess.pca.n_components").
         dims: valores candidatos.
         inner_val_year: año que se usa como inner-val (train = años previos). P.ej. 2018
-            ⇒ train 2017 → val 2018, dejando 2019 (val externo) intocado.
-        metric: ``"pearson_r"`` (max), ``"r2"`` (max) o ``"rmse"`` (min).
-        skip_dims_geq_inner_n: descarta dims ``>= n_train`` del inner. Para PCA es clave
-            (pedir más componentes que muestras degenera: techo de rango p≫n). Para HPs
+            => train 2017 -> val 2018, dejando 2019 (val externo) intocado.
+        metric: "pearson_r" (max), "r2" (max) o "rmse" (min).
+        skip_dims_geq_inner_n: descarta dims >= n_train del inner. Para PCA es clave
+            (pedir más componentes que muestras degenera: techo de rango p>>n). Para HPs
             que no son dim de PCA (latente chico del AE) nunca aplica.
 
     Returns:
@@ -72,14 +68,14 @@ def nested_temporal_dim_select(
             "(¿pediste el año más viejo del dev como inner-val?)."
         )
     (tr, va), = splits
-    assert_no_line_leakage(tr, va, arr.line_id)   # guard duro (regla 2)
+    assert_no_line_leakage(tr, va, arr.line_id)
     n_in = int(len(tr))
 
     scores: dict[int, float] = {}
     skipped: list[int] = []
     for d in dims:
         if skip_dims_geq_inner_n and int(d) >= n_in:
-            skipped.append(int(d))                # techo de rango: no es elegible honestamente
+            skipped.append(int(d))
             continue
         cfg = copy.deepcopy(cfg0)
         set_nested(cfg, dim_key, int(d))
@@ -113,13 +109,13 @@ def config_with_nested_dim(
     inner_val_year: int,
     metric: str = "pearson_r",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Igual que `nested_temporal_dim_select`, pero devuelve también el config listo.
+    """Igual que nested_temporal_dim_select, pero devuelve también el config listo.
 
-    El config conserva el split EXTERNO del `base_config` (p.ej. val 2019) y le
-    aplica la dim elegida en el inner. Pasáselo a `run_evaluation`/`evaluate_model`
+    El config conserva el split EXTERNO del base_config (p.ej. val 2019) y le
+    aplica la dim elegida en el inner. Pasáselo a run_evaluation/evaluate_model
     para evaluarlo en el val externo de forma honesta (la dim no se eligió ahí).
 
-    Returns: ``(config, selection_info)``.
+    Returns: (config, selection_info).
     """
     cfg = load_config(base_config) if isinstance(base_config, str) else copy.deepcopy(base_config)
     sel = nested_temporal_dim_select(

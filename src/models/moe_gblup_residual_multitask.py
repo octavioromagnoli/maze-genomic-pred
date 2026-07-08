@@ -1,29 +1,20 @@
-"""MoE hard (PCA+GMM, ruteo hard top-1) con GBLUP backbone: los expertos predicen el RESIDUO.
+"""MoE hard con backbone GBLUP: los expertos predicen el residuo.
 
-Es el `moe_multitask` (el MoE hard que gana en drought 2019) con UN solo cambio: en vez de predecir
-el fenotipo crudo, cada experto predice el residuo ``R = y − û`` del GBLUP y la predicción final es
-``û + salida_experto``. El ruteo (PCA de SNPs + GMM, hard top-1) queda IDÉNTICO al hard MoE, así que
-esto aísla el efecto de "impulsar la red multitask con el GBLUP como backbone" sobre la arquitectura
-que ya funciona (acá se cambia solo el target, no el ruteo).
+Igual que moe_multitask pero, en vez del fenotipo crudo, cada experto predice el
+residuo R = y - u_hat del GBLUP y la predicción final es u_hat + salida del experto.
+El ruteo (PCA + GMM, hard top-1) queda idéntico al MoE hard, así que esto aísla el
+efecto de usar el GBLUP como backbone.
 
-Pipeline (todo train-only por fold, regla 1):
-1. **GBLUP backbone.** Un GBLUP por trait/ambiente ajustado SOLO con el train ⇒ ``û`` ``(n, T)`` y el
-   residuo ``R = y − û`` (target de los expertos). En inferencia ``û`` de test sale de aplicar el
-   GBLUP ya entrenado (relación genómica G test↔train: genotipos, NO fenotipos de test).
-2. **Ruteo PCA+GMM hard top-1** (idéntico a `moe_multitask`): [z-score] → PCA → GMM sobre los SNPs;
-   se rutea por argmax de responsabilidad. PCA/GMM se ajustan solo con train.
-3. **Un experto (EnsembleMultitaskRegressor) por cluster** que predice ``R`` sobre los SNPs completos,
-   + `min_cluster_size` y un global fallback como el hard MoE.
-4. **Predicción** = ``û(línea) + experto_del_cluster(línea)``.
+Por fold: se ajusta un GBLUP por trait/ambiente con el train (da u_hat y el residuo
+R = y - u_hat, target de los expertos; en inferencia u_hat sale del GBLUP ya
+entrenado, sin fenotipos de test), se rutea con PCA+GMM como el MoE hard, y un
+experto por cluster predice R sobre los SNPs completos (con min_cluster_size y un
+fallback global). La predicción es u_hat + experto del cluster.
 
-**Calibración del residuo.** El ensemble z-scorea sus predicciones (escala arbitraria por la loss
-Pearson), así que su salida no está en la escala del residuo; como la suma ``û + salida`` es aditiva,
-cada experto se recalibra con un OLS 1D train-only (``R ≈ a·salida + b`` por columna). Un experto sin
-correlación real cae a ``a≈0`` ⇒ corrección ≈0 ⇒ la predicción vuelve a ``û`` (GBLUP), el fallback seguro.
-
-Se enchufa en `run_multitask_evaluation` (``fit(X, Y, Y_mask)`` / ``predict(X) -> (n, T)``) igual que
-`moe_multitask`; el dispatch de `scripts/train.py` lo incluye por nombre. Reusa el gating de
-`moe_multitask` (PCA/GMM), `GBLUP` (backbone) y `EnsembleMultitaskRegressor` (expertos).
+El ensemble z-scorea sus salidas (la loss Pearson deja la escala arbitraria), así
+que cada experto se recalibra con un OLS 1D por columna (R ~ a*salida + b) para
+llevarlas a la escala del residuo. Un experto sin correlación cae a a~0, de modo que
+la predicción vuelve a u_hat (GBLUP) como fallback seguro.
 """
 from __future__ import annotations
 
@@ -37,32 +28,29 @@ from src.models.base import BaseModel
 from src.models.ensemble_multitask import EnsembleMultitaskRegressor
 from src.models.gblup import GBLUP
 
-# Defaults del gating (PCA + GMM), idénticos al hard MoE, más el sub-dict `gblup` del backbone.
 _GATING_DEFAULTS: dict[str, Any] = {
-    "gblup": {},                  # params por-columna del GBLUP backbone (p.ej. {lambda_method: reml})
-    "pca_n_components": 50,       # dims retenidas por PCA (HP del sweep)
-    "standardize": True,          # z-score por-SNP antes del PCA (train-only)
-    "whiten": True,               # componentes a varianza unitaria (mejor condicionado para GMM 'full')
-    "k": 3,                       # nº de clusters GMM (HP del sweep)
-    "covariance_type": "full",    # full | diag | tied | spherical
-    "reg_covar": 1e-6,            # estabilidad numérica del GMM
-    "n_init": 1,                  # reinicios del EM
-    "min_cluster_size": 150,      # cluster con menos filas => sin experto propio (usa fallback)
-    "global_fallback": True,      # experto extra sobre TODO el train, para clusters chicos/vacíos
+    "gblup": {},
+    "pca_n_components": 50,
+    "standardize": True,
+    "whiten": True,
+    "k": 3,
+    "covariance_type": "full",
+    "reg_covar": 1e-6,
+    "n_init": 1,
+    "min_cluster_size": 150,
+    "global_fallback": True,
     "random_state": 575,
 }
 
 
 class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
-    """MoE hard (PCA+GMM, hard top-1) con GBLUP backbone: los expertos predicen el residuo.
+    """MoE hard con backbone GBLUP: los expertos predicen el residuo.
 
-    `params` (sub-dict ``model.params`` del config):
-        gating : dict con los defaults de ``_GATING_DEFAULTS`` (backbone GBLUP + PCA + GMM + salvaguardas).
-        expert : dict de params de `EnsembleMultitaskRegressor` (``n_models``, ``seed_step``, ``inner``).
-                 Igual que el hard MoE.
+    params.gating trae los defaults de _GATING_DEFAULTS (backbone GBLUP + PCA + GMM +
+    salvaguardas) y params.expert los del EnsembleMultitaskRegressor, como el MoE hard.
 
-    `fit(X, Y, Y_mask)` recibe ``Y``/``Y_mask`` ``(n, T)`` (faltantes en 0, mask=True donde hay dato);
-    los nombres de columna llegan por `set_fit_context(target_names=...)`. `predict(X)` devuelve ``(n, T)``.
+    fit(X, Y, Y_mask) recibe Y/Y_mask de shape (n, T) (faltantes en 0, mask=True donde
+    hay dato); los nombres de columna llegan por set_fit_context. predict(X) devuelve (n, T).
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -70,10 +58,9 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
         self.gating_params: dict[str, Any] = {**_GATING_DEFAULTS, **dict(self.params.get("gating", {}) or {})}
         self.expert_params: dict[str, Any] = dict(self.params.get("expert", {}) or {})
 
-    # --- Construcción de piezas --------------------------------------------
 
     def _build_gating(self) -> Any:
-        """Cadena de featurización del gating (train-only): [z-score] -> PCA. Idéntica al hard MoE."""
+        """Cadena de featurización del gating: [z-score] -> PCA. Idéntica al MoE hard."""
         g = self.gating_params
         steps: list = []
         if bool(g["standardize"]):
@@ -82,7 +69,7 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
             PCAReducer(
                 n_components=int(g["pca_n_components"]),
                 whiten=bool(g["whiten"]),
-                svd_solver="full",              # determinista (regla de reproducibilidad)
+                svd_solver="full",
                 random_state=int(g["random_state"]),
             )
         )
@@ -96,14 +83,13 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
         p = np.asarray(p, dtype=float)
         return p.reshape(-1, 1) if p.ndim == 1 else p
 
-    # --- Calibración lineal del experto a la escala del residuo -------------
 
     def _fit_calibration(
         self, expert: EnsembleMultitaskRegressor, X: np.ndarray, R: np.ndarray, M: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """OLS 1D por columna ``R ≈ a·salida + b`` (train-only) que lleva la salida z-scoreada del
-        experto a la escala del residuo. Devuelve ``(a, b)`` de shape ``(T,)``. Experto plano
-        (varianza ~0) => ``a=0``, ``b=media(R)`` ⇒ corrección nula (la predicción cae a û)."""
+        """OLS 1D por columna (R ~ a*salida + b) que lleva la salida z-scoreada del
+        experto a la escala del residuo. Devuelve (a, b) de shape (T,). Un experto plano
+        (varianza ~0) da a=0, b=media(R): corrección nula y la predicción cae a u_hat."""
         P = self._as_2d(expert.predict(X))
         T = int(R.shape[1])
         slope = np.zeros(T)
@@ -137,7 +123,6 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
             raise RuntimeError(f"cluster {c} sin experto ni fallback; activá gating.global_fallback.")
         return self.fallback_, self.calib_fallback_
 
-    # --- Interfaz BaseModel -------------------------------------------------
 
     def fit(
         self, X: np.ndarray, Y: np.ndarray, Y_mask: np.ndarray | None = None
@@ -162,7 +147,6 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
         line_id = ctx.get("line_id")
         target_names = ctx.get("target_names")
 
-        # --- 1) GBLUP backbone por trait/ambiente (train-only) ⇒ û y residuo R --
         self.gblups_: list[GBLUP] = []
         U = np.empty((X.shape[0], self.n_targets_), dtype=float)
         for t in range(self.n_targets_):
@@ -174,7 +158,6 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
             U[:, t] = gb.predict(X)
         R = np.where(Y_mask, Y - U, 0.0)
 
-        # --- 2) Gating PCA + GMM hard top-1 sobre los SNPs (idéntico al hard MoE) --
         self.pre_ = self._build_gating()
         Z = self.pre_.fit_transform(X)
         self.gmm_ = GaussianMixture(
@@ -185,11 +168,10 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
             random_state=int(g["random_state"]),
         )
         self.gmm_.fit(Z)
-        labels = self.gmm_.predict(Z)  # asignación hard por argmax de responsabilidad
+        labels = self.gmm_.predict(Z)
 
         min_size = int(g["min_cluster_size"])
 
-        # --- 3) Un experto por cluster que predice el RESIDUO + su calibración --
         self.experts_: dict[int, EnsembleMultitaskRegressor] = {}
         self.calib_experts_: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         self.cluster_sizes_: dict[int, int] = {}
@@ -198,7 +180,7 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
             n_c = int(mask.sum())
             self.cluster_sizes_[c] = n_c
             if n_c < min_size:
-                continue  # cluster chico => sin experto propio; lo atiende el fallback
+                continue
             expert = self._make_expert()
             expert.set_fit_context(
                 year=None if year is None else np.asarray(year)[mask],
@@ -209,7 +191,6 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
             self.experts_[c] = expert
             self.calib_experts_[c] = self._fit_calibration(expert, X[mask], R[mask], Y_mask[mask])
 
-        # --- 4) Global fallback: experto del residuo sobre TODO el train -------
         self.fallback_: EnsembleMultitaskRegressor | None = None
         self.calib_fallback_: tuple[np.ndarray, np.ndarray] | None = None
         if bool(g["global_fallback"]) or (len(self.experts_) < k):
@@ -228,10 +209,9 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
             raise RuntimeError("GBLUPResidualHardMoEMultitaskRegressor.predict llamado antes de fit.")
         X = np.asarray(X, dtype=np.float64)
 
-        # û de test aplicando los GBLUPs ya entrenados (solo genotipos).
-        U = np.column_stack([gb.predict(X) for gb in self.gblups_])   # (n, T)
+        U = np.column_stack([gb.predict(X) for gb in self.gblups_])
         Z = self.pre_.transform(X)
-        clusters = self.gmm_.predict(Z)  # hard top-1 (cluster de mayor responsabilidad)
+        clusters = self.gmm_.predict(Z)
 
         out = np.empty((X.shape[0], self.n_targets_), dtype=float)
         for c in np.unique(clusters):
@@ -253,7 +233,7 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
         }
         for c, s in self.cluster_sizes_.items():
             params[f"cluster_size_{c}"] = int(s)
-        gfp = getattr(self.pre_, "get_fitted_params", None)  # pca_n_components + var explicada
+        gfp = getattr(self.pre_, "get_fitted_params", None)
         if callable(gfp):
             params.update(gfp())
         for t, gb in enumerate(self.gblups_):
@@ -269,7 +249,6 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
         params["n_params"] = int(n_params)
         return params
 
-    # --- Persistencia (override: expertos torch en subdirs; resto joblib) ----
 
     def save(self, path: str | Path) -> Path:
         import joblib
@@ -298,8 +277,8 @@ class GBLUPResidualHardMoEMultitaskRegressor(BaseModel):
                 "gating_params": self.gating_params,
                 "expert_params": self.expert_params,
                 "gblups_": self.gblups_,
-                "pre_": self.pre_,          # SNPPreprocessor/PCAReducer/PreprocChain
-                "gmm_": self.gmm_,          # GaussianMixture
+                "pre_": self.pre_,
+                "gmm_": self.gmm_,
                 "k_": self.k_,
                 "n_targets_": self.n_targets_,
                 "cluster_sizes_": self.cluster_sizes_,

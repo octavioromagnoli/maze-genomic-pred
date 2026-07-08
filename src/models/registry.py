@@ -1,7 +1,7 @@
-"""Registry de modelos: mapea `model.name` del config a una clase.
+"""Registry de modelos: mapea model.name del config a una clase.
 
-`build_model` también compone el preprocesamiento: si el config trae un bloque
-`preprocess:`, envuelve el modelo en `PreprocessedModel`.
+build_model también compone el preprocesamiento: si el config trae un bloque
+preprocess:, envuelve el modelo en PreprocessedModel.
 """
 from __future__ import annotations
 
@@ -46,10 +46,10 @@ REGISTRY: dict[str, type[BaseModel]] = {
 class PreprocessedModel(BaseModel):
     """Compone un preprocesador train-only de SNPs con un modelo interno.
 
-    Respeta la interfaz `fit`/`predict`(sirve para todos los modelos). El
+    Respeta la interfaz fit/predict(sirve para todos los modelos). El
     preprocesamiento (máscara de columnas, stats de escala) **viaja dentro del
-    modelo guardado**. `save`/`load` usan el joblib del objeto
-    entero (default de `BaseModel`), que persiste `pre` + `inner` juntos.
+    modelo guardado**. save/load usan el joblib del objeto
+    entero (default de BaseModel), que persiste pre + inner juntos.
     """
 
     def __init__(self, pre: Any, inner: BaseModel) -> None:
@@ -58,13 +58,8 @@ class PreprocessedModel(BaseModel):
         self.inner = inner
 
     def set_fit_context(self, **context: Any) -> None:
-        # Propaga el contexto del fold (year/line_id) al modelo interno: lo usa
-        # para su selección de HP temporal-aware. Sin
-        # esto el inner no vería los años y caería a K-fold aleatorio
         super().set_fit_context(**context)
         self.inner.set_fit_context(**context)
-        # También al preprocesador si lo acepta (p.ej. el autoencoder lo usa para
-        # su held-out por línea train-only, sin tocar el val externo del fold).
         pre_setter = getattr(self.pre, "set_fit_context", None)
         if callable(pre_setter):
             pre_setter(**context)
@@ -73,16 +68,14 @@ class PreprocessedModel(BaseModel):
         if hasattr(self.inner, "fit_with_preprocessor"):
             self.inner.fit_with_preprocessor(self.pre, X, y)
             return self
-        Xt = self.pre.fit_transform(X)   # fit del preprocesador solo con train
+        Xt = self.pre.fit_transform(X)
         self.inner.fit(Xt, y)
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return self.inner.predict(self.pre.transform(X))   # mismas columnas/stats de train
+        return self.inner.predict(self.pre.transform(X))
 
     def get_fitted_params(self) -> dict[str, Any]:
-        # Estimaciones del modelo interno (alpha, lambda_0, ...) + del
-        # preprocesador (n_components/varianza del PCA) → se logean por fold.
         out = dict(self.inner.get_fitted_params())
         gfp = getattr(self.pre, "get_fitted_params", None)
         if callable(gfp):
@@ -91,11 +84,11 @@ class PreprocessedModel(BaseModel):
 
 
 def build_model(config: dict[str, Any]) -> BaseModel:
-    """Instancia el modelo indicado en `config['model']['name']`.
+    """Instancia el modelo indicado en config['model']['name'].
 
-    Si el config trae un bloque `preprocess:`, envuelve el modelo en
-    `PreprocessedModel` (preprocesamiento train-only de SNPs, común a todos los
-    modelos). El loop de entrenamiento no cambia: sigue llamando `fit`/`predict`.
+    Si el config trae un bloque preprocess:, envuelve el modelo en
+    PreprocessedModel (preprocesamiento train-only de SNPs, común a todos los
+    modelos). El loop de entrenamiento no cambia: sigue llamando fit/predict.
     """
     model_cfg = config.get("model", {})
     name = model_cfg.get("name")

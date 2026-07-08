@@ -1,32 +1,20 @@
-"""MLP multitask (PyTorch) — un tronco compartido, varias cabezas de regresión.
+"""MLP multitask (PyTorch): un tronco compartido y varias cabezas de regresión.
 
-Extiende la idea del MLP single-task (`src/models/mlp.py`) al caso **multitask**:
-una sola red comparte representación entre varios traits (p.ej. GY, PH, AD) y una
-cabeza lineal ``Linear(prev, n_targets)`` predice todos a la vez. El objetivo es ver
-si las tareas auxiliares (PH, AD) ayudan a la portada (GY) en el régimen p >> n.
+Extiende el MLP single-task (src/models/mlp.py) al caso multitask: una sola red
+comparte representación entre varios traits (GY, PH, AD) y una cabeza Linear(prev,
+n_targets) los predice todos a la vez, para ver si las tareas auxiliares (PH, AD)
+ayudan a la portada (GY) en p >> n. Reusa _MLPNet y pearson_loss del single-task.
 
-Reusa `_MLPNet` (parametrizado con `out_dim`) y `pearson_loss` de `src/models/mlp.py`.
-Decisiones alineadas con las reglas del proyecto:
+La estandarización train-only va dentro de fit: z-score de features por SNP y del
+target por columna, ignorando los valores enmascarados. Los mu/sigma del target se
+registran como buffers del net para que viajen en el state_dict. Cada observación
+puede no tener medidos todos los traits: Y trae los faltantes en 0 e Y_mask marca
+los reales, y la loss usa solo las filas válidas de cada columna.
 
-- **Sin leakage (regla 1).** Estandarización train-only DENTRO de `fit`: z-score de
-  features por SNP y z-score del target **por columna**, calculado **ignorando los
-  valores enmascarados** (un trait no medido no entra en su media/desvío). Los
-  estadísticos del target (mu/sigma por trait) se registran como **buffers** del net,
-  así viajan en el `state_dict` y la transformación inversa en inferencia es exacta.
-- **Faltantes por trait (máscara explícita).** Cada observación puede no tener medidos
-  todos los traits. `Y` viene con los faltantes en 0 e `Y_mask` (bool) marca los datos
-  reales. La pérdida y las métricas usan SOLO las filas válidas de cada columna.
-- **Pérdida Pearson enmascarada y ponderada.** ``L = sum_i w_i * (1 - r_i)`` por trait,
-  con ``w_i`` por config (más peso a GY). *Safeguard*: si un trait tiene <2 ejemplos
-  válidos en el batch, su término es 0 (evita NaN en los gradientes). ``loss="pearson"``
-  (default) o ``"pearson_mse"`` (agrega ``mse_weight`` por trait sobre el target
-  estandarizado para recalibrar escala).
-- **Reproducibilidad.** `random_state` siembra el RNG de torch dentro de `fit`.
-
-v1 **no** implementa early stopping (los configs usan ``patience: null``; con un solo
-año de train no hay inner-split temporal posible). Si se pasa `patience` se levanta un
-error claro. Persistencia: override de `save`/`load` (state_dict + arquitectura +
-escalas + nombres de traits), como el MLP single-task.
+La loss es una suma ponderada de Pearson por trait (más peso a GY); si un trait tiene
+<2 ejemplos válidos en el batch su término es 0. loss="pearson" (default) o
+"pearson_mse". No implementa early stopping (patience debe ser null). save/load
+guardan state_dict + arquitectura + escalas + nombres de traits.
 """
 from __future__ import annotations
 
@@ -40,7 +28,6 @@ from src.eval.metrics import pearson_r
 from src.models.base import BaseModel
 from src.models.mlp import _MLPNet, pearson_loss
 
-# Defaults: subconjunto relevante del MLP single-task + pesos de loss multitask.
 _DEFAULTS: dict[str, Any] = {
     "hidden_dims": [256],
     "dropout": 0.5,
@@ -51,14 +38,14 @@ _DEFAULTS: dict[str, Any] = {
     "weight_decay": 1e-4,
     "batch_size": 64,
     "max_epochs": 200,
-    "loss": "pearson",        # "pearson" (1 - r por trait) | "pearson_mse"
-    "mse_weight": 0.3,        # peso del término MSE por trait cuando loss="pearson_mse"
-    "patience": None,         # v1: sin early stopping (debe quedar null)
+    "loss": "pearson",
+    "mse_weight": 0.3,
+    "patience": None,
     "standardize_inputs": True,
     "standardize_target": True,
     "random_state": 575,
     "device": "cpu",
-    "loss_weights": {},       # {trait: w}; default 1.0 para el trait ausente del dict
+    "loss_weights": {},
 }
 
 
@@ -72,16 +59,15 @@ def masked_weighted_pearson_loss(
 ) -> torch.Tensor:
     """Suma ponderada de pérdidas Pearson por trait, usando solo filas válidas.
 
-    ``pred``/``target``/``mask`` tienen shape ``(B, T)``; ``weights`` ``(T,)``.
-    Para cada trait j toma las filas con ``mask[:, j]`` y suma ``w_j * (1 - r_j)``
-    (más ``w_j * mse_weight * MSE_j`` si ``mse_weight > 0``). **Safeguard**: si un
-    trait tiene <2 filas válidas en el batch, su término se omite (queda 0) para no
-    propagar NaN en los gradientes. Reusa `pearson_loss` (consistente con la métrica).
+    pred/target/mask tienen shape (B, T) y weights (T,). Para cada trait j toma las
+    filas con mask[:, j] y suma w_j * (1 - r_j) (más w_j * mse_weight * MSE_j si
+    mse_weight > 0). Si un trait tiene <2 filas válidas en el batch su término se omite
+    para no propagar NaN. Reusa pearson_loss.
     """
     total = pred.new_zeros(())
     for j in range(pred.shape[1]):
         valid = mask[:, j]
-        if int(valid.sum().item()) < 2:   # safeguard: <2 válidos => término 0 (sin NaN)
+        if int(valid.sum().item()) < 2:
             continue
         pj = pred[valid, j]
         tj = target[valid, j]
@@ -93,19 +79,18 @@ def masked_weighted_pearson_loss(
 
 
 class MLPMultitaskRegressor(BaseModel):
-    """Perceptrón multicapa multitask (PyTorch): tronco compartido + cabeza ``Linear(prev, n_targets)``.
+    """Perceptrón multicapa multitask (PyTorch): tronco compartido + cabeza Linear(prev, n_targets).
 
-    `params` (sub-dict ``model.params`` del config) — además de los del MLP single-task:
+    params (sub-dict model.params del config) — además de los del MLP single-task:
         loss               : "pearson" (default) | "pearson_mse".
-        loss_weights       : dict ``{trait: w}`` para la suma ponderada (default 1.0).
-        patience           : debe ser ``null`` (early stopping no soportado en v1).
+        loss_weights       : dict {trait: w} para la suma ponderada (default 1.0).
+        patience           : debe ser null (early stopping no soportado en v1).
 
-    `fit(X, Y, Y_mask)` recibe ``Y`` ``(n, T)`` (faltantes en 0) e ``Y_mask`` ``(n, T)``
-    bool. Los nombres de los traits llegan por `set_fit_context(target_names=...)` para
-    alinear ``loss_weights`` con las columnas de ``Y``. `predict(X)` devuelve ``(n, T)``.
+    fit(X, Y, Y_mask) recibe Y (n, T) (faltantes en 0) e Y_mask (n, T)
+    bool. Los nombres de los traits llegan por set_fit_context(target_names=...) para
+    alinear loss_weights con las columnas de Y. predict(X) devuelve (n, T).
     """
 
-    # --- Resolución de hiperparámetros / device / seed ----------------------
 
     def _resolve_cfg(self) -> dict[str, Any]:
         cfg = {**_DEFAULTS, **{k: v for k, v in self.params.items() if k in _DEFAULTS}}
@@ -133,11 +118,10 @@ class MLPMultitaskRegressor(BaseModel):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(int(seed))
 
-    # --- Estandarización train-only -----------------------------------------
 
     @staticmethod
     def _compute_x_scalers(X: np.ndarray, cfg: dict[str, Any]):
-        """z-score de features con train (regla 1). SNP constante => std 1."""
+        """z-score de features con train. SNP constante => std 1."""
         if cfg["standardize_inputs"]:
             x_mean = X.mean(axis=0)
             x_std = X.std(axis=0)
@@ -162,7 +146,6 @@ class MLPMultitaskRegressor(BaseModel):
                     sd[j] = s if s > 0 else 1.0
         return mu, sd
 
-    # --- Construcción de red / forward 2D -----------------------------------
 
     def _build_net(self, in_dim: int, out_dim: int, cfg: dict[str, Any]) -> _MLPNet:
         return _MLPNet(
@@ -176,16 +159,16 @@ class MLPMultitaskRegressor(BaseModel):
         )
 
     def _forward2d(self, x: torch.Tensor) -> torch.Tensor:
-        """Salida del net garantizada 2D ``(n, T)`` (con T=1, _MLPNet hace squeeze)."""
+        """Salida del net garantizada 2D (n, T) (con T=1, _MLPNet hace squeeze)."""
         out = self.net_(x)
         return out.unsqueeze(-1) if out.ndim == 1 else out
 
     def _monitor_val(self, device: "torch.device"):
-        """Val externo del fold (de `set_fit_context`) SOLO para la curva por época.
+        """Val externo del fold (de set_fit_context) para la curva por época.
 
-        Devuelve ``(Xv_tensor_estandarizado, Yv_raw, Mv)`` o ``None``. Se usa sin
-        seleccionar nada (sin early stopping) => sin leakage. El Pearson es invariante a
-        afines, así que se compara la predicción estandarizada contra el target crudo.
+        Devuelve (Xv_estandarizado, Yv_raw, Mv) o None. No selecciona nada (sin early
+        stopping). Como el Pearson es invariante a afines, compara la predicción
+        estandarizada contra el target crudo.
         """
         Xe = self._fit_context.get("eval_X")
         Ye = self._fit_context.get("eval_Y")
@@ -208,7 +191,6 @@ class MLPMultitaskRegressor(BaseModel):
         Xs = (Xe - self.x_mean_) / self.x_std_
         return torch.as_tensor(Xs, dtype=torch.float32, device=device), Ye, Me
 
-    # --- Interfaz BaseModel -------------------------------------------------
 
     def fit(self, X: np.ndarray, Y: np.ndarray, Y_mask: np.ndarray | None = None) -> "MLPMultitaskRegressor":
         cfg = self._resolve_cfg()
@@ -236,7 +218,6 @@ class MLPMultitaskRegressor(BaseModel):
             raise ValueError(
                 f"target_names ({len(self.target_names_)}) no coincide con n_targets ({self.n_targets_})."
             )
-        # Pesos alineados con las columnas de Y (default 1.0 para trait ausente del dict).
         self.loss_weights_ = np.asarray(
             [float(cfg["loss_weights"].get(n, 1.0)) for n in self.target_names_], dtype=np.float64
         )
@@ -248,7 +229,6 @@ class MLPMultitaskRegressor(BaseModel):
         Ys = (Y - y_mean) / y_std
 
         net = self._build_net(self.n_features_in_, self.n_targets_, cfg).to(device)
-        # mu/sigma del target como BUFFERS => entran al state_dict y se mueven con el módulo.
         net.register_buffer("y_mean", torch.as_tensor(y_mean, dtype=torch.float32, device=device))
         net.register_buffer("y_std", torch.as_tensor(y_std, dtype=torch.float32, device=device))
         self.net_ = net
@@ -285,7 +265,7 @@ class MLPMultitaskRegressor(BaseModel):
                 optim.zero_grad()
                 pred = self._forward2d(Xt[idx])
                 loss = masked_weighted_pearson_loss(pred, Yt[idx], Mt[idx], w, mse_weight=mse_w)
-                if loss.requires_grad:   # algún trait tuvo >=2 válidos en el batch
+                if loss.requires_grad:
                     loss.backward()
                     optim.step()
                 run_loss += float(loss.item()) * idx.numel()
@@ -316,7 +296,7 @@ class MLPMultitaskRegressor(BaseModel):
         self.net_.eval()
         with torch.no_grad():
             out = self._forward2d(torch.as_tensor(Xs, dtype=torch.float32, device=device))
-            out = out * self.net_.y_std + self.net_.y_mean   # inverse z-score (buffers)
+            out = out * self.net_.y_std + self.net_.y_mean
         return out.detach().cpu().numpy().astype(float)
 
     def get_fitted_params(self) -> dict[str, Any]:
@@ -326,14 +306,13 @@ class MLPMultitaskRegressor(BaseModel):
             "selected_epochs": int(self.cfg_["max_epochs"]),
             "n_params": getattr(self, "n_params_", None),
             "n_targets": getattr(self, "n_targets_", None),
-            "hidden_dims": str(self.cfg_["hidden_dims"]),  # no-numérico => metadata
+            "hidden_dims": str(self.cfg_["hidden_dims"]),
             "loss_weights": str(
                 {n: float(wv) for n, wv in zip(self.target_names_, self.loss_weights_)}
             ),
             "target_names": str(self.target_names_),
         }
 
-    # --- Persistencia (override torch: state_dict + arquitectura) -----------
 
     def save(self, path: str | Path) -> Path:
         if not hasattr(self, "net_"):
@@ -343,7 +322,7 @@ class MLPMultitaskRegressor(BaseModel):
         ckpt = {
             "config": self.config,
             "cfg_": self.cfg_,
-            "state_dict": self.net_.state_dict(),     # incluye buffers y_mean/y_std
+            "state_dict": self.net_.state_dict(),
             "n_features_in_": self.n_features_in_,
             "n_targets_": self.n_targets_,
             "target_names_": list(self.target_names_),
@@ -368,7 +347,6 @@ class MLPMultitaskRegressor(BaseModel):
         obj.x_mean_ = np.asarray(ckpt["x_mean_"], dtype=np.float64)
         obj.x_std_ = np.asarray(ckpt["x_std_"], dtype=np.float64)
         net = obj._build_net(obj.n_features_in_, obj.n_targets_, obj.cfg_)
-        # Registrar los buffers para que existan las claves antes de cargar el state_dict.
         net.register_buffer("y_mean", torch.zeros(obj.n_targets_))
         net.register_buffer("y_std", torch.ones(obj.n_targets_))
         net.load_state_dict(ckpt["state_dict"])

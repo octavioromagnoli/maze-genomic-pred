@@ -1,31 +1,20 @@
-"""Autoencoder de SNPs binarios — compresor no lineal (regla 4: BCE, no MSE).
+"""Autoencoder de SNPs binarios: compresor no lineal con pérdida BCE.
 
-Piezas, al estilo del proyecto y con el patrón Dataset/DataLoader/loop por época:
+SNPAutoencoder es un MLP encoder/decoder (con tied weights opcional en
+_TiedDecoder). La salida son logits y la pérdida es BCEWithLogitsLoss, que funde la
+sigmoide con la BCE de forma estable (los SNPs son binarios). El latente es lineal
+para no saturar el embedding que consume el modelo downstream (GBLUP/XGBoost).
 
-- ``SNPAutoencoder`` (``nn.Module``): MLP encoder/decoder. Encoder y decoder son
-  ``nn.Sequential`` (con *tied weights* opcional, encapsulado en ``_TiedDecoder``).
-  La salida son **logits**; la pérdida es ``BCEWithLogitsLoss``, que funde la
-  sigmoide con la BCE de forma estable ⇒ "salida sigmoide + binary cross-entropy"
-  de la regla 4. El latente es lineal (sin activación/BN) para no saturar el
-  embedding que consume el modelo downstream (GBLUP/XGBoost).
+AutoencoderReducer expone la misma interfaz que PCAReducer
+(fit/transform/fit_transform/get_fitted_params), así entra en la cadena preprocess:.
+fit ajusta el AE con el train del fold y transform proyecta val/test por el encoder
+congelado. Entrena con minibatches, early stopping por BCE de validación, un time
+budget (max_train_seconds) y callback de curvas por época. Serializa por torch
+(state_dict + arquitectura) y es picklable dentro de un PreprocessedModel.
 
-- ``_SNPDataset`` / ``DataLoader``: como cualquier entrenamiento torch. El AE es no
-  supervisado, así que el "target" de reconstrucción es el propio input.
-
-- ``AutoencoderReducer``: expone la **misma interfaz de preprocesamiento** que
-  ``PCAReducer`` (``fit``/``transform``/``fit_transform``/``get_fitted_params``), así
-  entra en la cadena ``preprocess:`` sin reescribir nada. Train-only (regla 1):
-  ``fit`` ajusta el AE solo con el train del fold; ``transform`` proyecta val/test
-  por el encoder congelado. Entrena con minibatches (``DataLoader``), early stopping
-  por BCE de validación, *time budget* (``max_train_seconds``) y callback de
-  *learning curves* por época. Persistencia torch (``state_dict`` + arquitectura) y
-  ``__getstate__``/``__setstate__`` para ser picklable dentro de un
-  ``PreprocessedModel``.
-
-Hiperparámetros (todos barribles por sweep): profundidad/ancho del encoder, latente,
-activación, dropout, batchnorm, tied weights, denoising (masking de bits), sparsity
-L1 del latente, optimizador, lr, weight decay, batch size, épocas, paciencia, grad
-clip y scheduler de lr.
+Los hiperparámetros (profundidad/ancho del encoder, latente, activación, dropout,
+batchnorm, tied weights, denoising, sparsity L1 del latente, optimizador, lr, weight
+decay, batch size, épocas, paciencia, grad clip, scheduler) son barribles por sweep.
 """
 from __future__ import annotations
 
@@ -58,13 +47,12 @@ def _activation(name: str) -> nn.Module:
 
 
 def _mlp(dims: list[int], activation: str, dropout: float, batchnorm: bool) -> nn.Sequential:
-    """MLP ``nn.Sequential``: por capa oculta Linear->[BN]->act->[Dropout]; la última
-    capa queda lineal (sin activación) — sirve para el encoder (a latente) y para el
-    decoder (a logits)."""
+    """MLP nn.Sequential: por capa oculta Linear->[BN]->act->[Dropout]; la última
+    capa queda lineal, así sirve para el encoder (a latente) y para el decoder (a logits)."""
     layers: list[nn.Module] = []
     for i in range(len(dims) - 1):
         layers.append(nn.Linear(dims[i], dims[i + 1]))
-        if i < len(dims) - 2:  # no es la última capa
+        if i < len(dims) - 2:
             if batchnorm:
                 layers.append(nn.BatchNorm1d(dims[i + 1]))
             layers.append(_activation(activation))
@@ -74,21 +62,21 @@ def _mlp(dims: list[int], activation: str, dropout: float, batchnorm: bool) -> n
 
 
 class _TiedDecoder(nn.Module):
-    """Decoder con pesos atados a los del encoder (``W_dec = W_enc.T``; regulariza).
+    """Decoder con pesos atados a los del encoder (W_dec = W_enc.T; regulariza).
 
-    Reusa las matrices del encoder (no crea nuevas) ⇒ los gradientes fluyen a sus
-    pesos. Mantiene bias y capas post (BN/act/dropout) propios. Encapsula el *weight
-    tying* para que el caso común (sin tying) quede como dos ``nn.Sequential`` limpios.
+    Reusa las matrices del encoder, así que los gradientes fluyen a sus pesos. Mantiene
+    bias y capas post (BN/act/dropout) propios. Encapsula el weight tying para que el
+    caso común (sin tying) queden dos nn.Sequential limpios.
     """
 
     def __init__(self, encoder: nn.Sequential, activation: str, dropout: float, batchnorm: bool) -> None:
         super().__init__()
-        self._enc = [m for m in encoder if isinstance(m, nn.Linear)]  # refs (ya registrados en el encoder)
+        self._enc = [m for m in encoder if isinstance(m, nn.Linear)]
         self.biases = nn.ParameterList()
         self.posts = nn.ModuleList()
         L = len(self._enc)
         for i in range(L):
-            src = self._enc[L - 1 - i]            # capa espejo del encoder
+            src = self._enc[L - 1 - i]
             self.biases.append(nn.Parameter(torch.zeros(src.in_features)))
             if i < L - 1:
                 post: list[nn.Module] = []
@@ -112,7 +100,7 @@ class _TiedDecoder(nn.Module):
 
 
 class SNPAutoencoder(nn.Module):
-    """MLP encoder/decoder para SNPs. ``forward`` devuelve ``(logits, z)``."""
+    """MLP encoder/decoder para SNPs. forward devuelve (logits, z)."""
 
     def __init__(
         self,
@@ -159,52 +147,45 @@ class _SNPDataset(Dataset):
         return torch.tensor(self.X[idx], dtype=torch.float32)
 
 
-# --- Reducer (interfaz de preprocesamiento, train-only) ---------------------
 
 
 _REDUCER_DEFAULTS: dict[str, Any] = {
-    # arquitectura
     "latent_dim": 64,
     "encoder_hidden": [2048, 512],
     "activation": "relu",
     "dropout": 0.0,
     "batchnorm": False,
     "tie_weights": False,
-    # regularización
-    "denoising_p": 0.0,     # prob. de enmascarar (a 0) cada bit de entrada
-    "l1_latent": 0.0,       # peso de la penalización L1 sobre el latente (sparse AE)
-    "weight_decay": 0.0,    # L2 del optimizador
-    # optimización
+    "denoising_p": 0.0,
+    "l1_latent": 0.0,
+    "weight_decay": 0.0,
     "optimizer": "adamw",
     "lr": 1e-3,
     "batch_size": 128,
     "max_epochs": 200,
-    "patience": 20,         # early stopping por val BCE
+    "patience": 20,
     "min_delta": 1e-4,
-    "grad_clip": 0.0,       # 0 = sin clipping
-    "lr_scheduler": "none",  # none | cosine | plateau
-    # validación interna (cuando no se pasa un val externo por set_fit_context)
-    "val_frac": 0.1,        # fracción de LÍNEAS held-out para early stopping
-    # runtime
-    "maf_threshold": 0.0,   # filtro MAF train-only opcional, ANTES del AE (0 = off)
-    "device": None,         # None -> cuda si hay, si no cpu
+    "grad_clip": 0.0,
+    "lr_scheduler": "none",
+    "val_frac": 0.1,
+    "maf_threshold": 0.0,
+    "device": None,
     "seed": 575,
-    "max_train_seconds": None,  # time budget del fit (None = sin límite)
+    "max_train_seconds": None,
     "verbose": False,
 }
 
 
 class AutoencoderReducer:
-    """Autoencoder como paso de reducción de dimensionalidad, train-only (regla 1).
+    """Autoencoder como paso de reducción de dimensionalidad, train-only.
 
-    Misma interfaz que ``PCAReducer`` para encajar en la cadena ``preprocess:``. La
-    entrada deben ser SNPs **binarios** {0,1} (regla 4); el embedding de salida es
-    continuo. El val de early stopping sale, por prioridad: (1) val externo pasado
-    por ``set_fit_context(X_val=..., line_id_val=...)``; (2) held-out por LÍNEA del
-    train (``val_frac``, regla 2); (3) sin val ⇒ sin early stopping.
+    Misma interfaz que PCAReducer para encajar en la cadena preprocess:. La entrada
+    deben ser SNPs binarios {0,1}; el embedding de salida es continuo. El val de early
+    stopping sale, por prioridad: (1) val externo pasado por set_fit_context; (2)
+    held-out por línea del train (val_frac); (3) sin val, sin early stopping.
 
-    El callback ``log_fn`` (``set_log_fn``) recibe por época ``epoch``/``ae/train_bce``/
-    ``ae/val_bce``/``ae/val_recon_acc`` para wandb.
+    El callback log_fn (set_log_fn) recibe por época epoch, ae/train_bce, ae/val_bce y
+    ae/val_recon_acc para wandb.
     """
 
     def __init__(self, cfg: dict[str, Any] | None = None, **overrides: Any) -> None:
@@ -216,17 +197,15 @@ class AutoencoderReducer:
         self._fit_context: dict[str, Any] = {}
         self._log_fn: LogFn | None = None
 
-    # --- contexto / logging -------------------------------------------------
 
     def set_fit_context(self, **context: Any) -> None:
-        """Metadata del fold: ``line_id``/``year`` del train y, opcional, un val
-        externo de reconstrucción (``X_val``, ``line_id_val``)."""
+        """Metadata del fold: line_id/year del train y, opcional, un val
+        externo de reconstrucción (X_val, line_id_val)."""
         self._fit_context = context
 
     def set_log_fn(self, log_fn: LogFn | None) -> None:
         self._log_fn = log_fn
 
-    # --- resolución de device / val ----------------------------------------
 
     def _resolve_device(self) -> torch.device:
         dev = self.params.get("device")
@@ -256,7 +235,7 @@ class AutoencoderReducer:
         return self._maf.transform(X)
 
     def _split_train_val(self, X: np.ndarray):
-        """Devuelve ``(X_tr, X_val_or_None)``. Val externo > held-out por línea."""
+        """Devuelve (X_tr, X_val_or_None). Val externo > held-out por línea."""
         ctx = self._fit_context
         if ctx.get("X_val") is not None:
             X_val = self._maybe_maf(False, np.asarray(ctx["X_val"], dtype=np.float32))
@@ -270,7 +249,6 @@ class AutoencoderReducer:
         line_id = ctx.get("line_id")
         n = X.shape[0]
         if line_id is not None and len(line_id) == n:
-            # Held-out por LÍNEA (regla 2): ninguna línea cruza train/val del AE.
             groups = np.asarray(line_id)
             uniq = np.unique(groups)
             n_val = max(1, int(round(len(uniq) * val_frac)))
@@ -287,7 +265,6 @@ class AutoencoderReducer:
 
     def _make_loaders(self, X_tr: np.ndarray, X_val: np.ndarray | None, gen: torch.Generator):
         bs = int(self.params["batch_size"])
-        # drop_last con batchnorm evita un último batch de tamaño 1 (estadística inválida).
         train_loader = DataLoader(
             _SNPDataset(X_tr), batch_size=bs, shuffle=True,
             drop_last=bool(self.params["batchnorm"]), generator=gen,
@@ -298,7 +275,6 @@ class AutoencoderReducer:
         )
         return train_loader, val_loader
 
-    # --- optimizador / scheduler -------------------------------------------
 
     def _build_optimizer(self, model: nn.Module):
         name = str(self.params.get("optimizer", "adamw")).lower()
@@ -322,7 +298,6 @@ class AutoencoderReducer:
             return torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="min", patience=5, factor=0.5)
         raise ValueError(f"lr_scheduler={name!r} no soportado (none|cosine|plateau).")
 
-    # --- loops por época  ----------------------------------
 
     def _train_epoch(self, model, loader, optimizer, criterion, device, mask_gen) -> float:
         model.train()
@@ -333,13 +308,13 @@ class AutoencoderReducer:
         for xb in loader:
             xb = xb.to(device)
             xin = xb
-            if denoise_p > 0:  # denoising AE: enmascara bits de entrada; el target es el original
+            if denoise_p > 0:
                 mask = (torch.rand(xb.shape, generator=mask_gen, device="cpu") < denoise_p).to(device)
                 xin = xb * (~mask).to(xb.dtype)
             optimizer.zero_grad(set_to_none=True)
             logits, z = model(xin)
             loss = criterion(logits, xb)
-            if l1 > 0:  # sparse AE
+            if l1 > 0:
                 loss = loss + l1 * z.abs().mean()
             loss.backward()
             if grad_clip > 0:
@@ -363,7 +338,6 @@ class AutoencoderReducer:
             bits += xb.numel()
         return total / max(1, seen), correct / max(1, bits)
 
-    # --- entrenamiento ------------------------------------------------------
 
     def fit(self, X: np.ndarray, y: Any = None) -> "AutoencoderReducer":
         X = np.asarray(X, dtype=np.float32)
@@ -373,8 +347,8 @@ class AutoencoderReducer:
 
         device = self._resolve_device()
         seed = int(self.params.get("seed", 575))
-        gen = torch.Generator().manual_seed(seed)            # shuffle del DataLoader (reproducible)
-        mask_gen = torch.Generator().manual_seed(seed + 1)   # máscara de denoising (reproducible)
+        gen = torch.Generator().manual_seed(seed)
+        mask_gen = torch.Generator().manual_seed(seed + 1)
 
         self.input_dim_ = int(X_tr.shape[1])
         model = SNPAutoencoder(
@@ -392,7 +366,6 @@ class AutoencoderReducer:
         scheduler = self._build_scheduler(optimizer)
         criterion = nn.BCEWithLogitsLoss()
         train_loader, val_loader = self._make_loaders(X_tr, X_val, gen)
-        # Para early stopping/reporte: el val externo si existe, si no el propio train.
         eval_loader = val_loader if val_loader is not None else DataLoader(
             _SNPDataset(X_tr), batch_size=int(self.params["batch_size"]), shuffle=False
         )
@@ -443,7 +416,6 @@ class AutoencoderReducer:
                 stopped_by = "time_budget"
                 break
 
-        # Restaura el mejor estado (por val BCE), recalcula accuracy ahí y congela en CPU.
         model.load_state_dict(best_state)
         _, final_val_acc = self._eval_epoch(model, eval_loader, criterion, device)
         model.eval().to("cpu")
@@ -463,7 +435,6 @@ class AutoencoderReducer:
         }
         return self
 
-    # --- inferencia / interfaz de preprocesamiento -------------------------
 
     def _encode_all(self, X: np.ndarray) -> np.ndarray:
         device = self._resolve_device()
@@ -506,14 +477,13 @@ class AutoencoderReducer:
     def get_fitted_params(self) -> dict[str, Any]:
         return dict(getattr(self, "fitted_", {}))
 
-    # --- persistencia (torch) ----------------------------------------------
 
     def _arch(self) -> dict[str, Any]:
         keys = ("latent_dim", "encoder_hidden", "activation", "dropout", "batchnorm", "tie_weights")
         return {k: self.params[k] for k in keys}
 
     def save(self, path) -> "Any":
-        """Guarda arquitectura + ``state_dict`` + métricas en un único .pt (torch)."""
+        """Guarda arquitectura + state_dict + métricas en un único .pt (torch)."""
         from pathlib import Path
 
         path = Path(path)
@@ -543,7 +513,6 @@ class AutoencoderReducer:
             obj._maf = payload["maf"]
         return obj
 
-    # --- pickle (joblib) cuando viaja dentro de un PreprocessedModel --------
 
     def __getstate__(self) -> dict[str, Any]:
         state = {"params": self.params, "fitted": getattr(self, "fitted_", {})}
@@ -552,7 +521,7 @@ class AutoencoderReducer:
             state["input_dim"] = int(self.input_dim_)
             state["state_dict"] = {k: v.cpu() for k, v in self.model_.state_dict().items()}
             state["maf"] = getattr(self, "_maf", None)
-        return state  # se descartan log_fn / fit_context a propósito
+        return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.params = state["params"]

@@ -1,18 +1,14 @@
-"""Evaluación temporal multitask: una red, varias cabezas, métricas POR trait.
+"""Evaluación temporal multitask: una red, varias cabezas, métricas por trait.
 
-Espeja `src.training.run.run_evaluation` pero para el MLP multitask: entrena una
-sola red (tronco compartido + cabeza ``Linear(prev, n_targets)``) y al evaluar itera
-por trait aplicando su máscara, de modo que métricas e IC se calculan **solo con los
-datos reales** de cada trait. Reusa los mismos splits temporales y guards anti-leakage
-que la ruta single-task (no se reimplementa nada de eso).
+Espeja run_evaluation pero para la red multitask: entrena una sola red (tronco
+compartido + cabeza Linear(prev, n_targets)) y al evaluar itera por trait aplicando su
+máscara, de modo que métricas e IC se calculan solo con los datos reales de cada trait.
+Usa los mismos splits temporales y guards anti-leakage que la ruta single-task.
 
-Diferencias con `run_evaluation`:
-- `data.targets` (lista) en vez de `data.target` (escalar). El loader devuelve
-  ``Y``/``Y_mask`` ``(n_obs, n_targets)``.
-- `per_fold` tiene un dict por **(fold, trait)** (con la clave extra ``trait``).
-- `summary` agrega por trait (claves ``"<trait>/pearson_r_mean"`` ...) y expone
-  ``pearson_r_GY`` (Pearson de GY de los folds de scoring) como métrica que el sweep
-  optimiza directamente — NO el promedio simple de los traits.
+Diferencias con run_evaluation: data.targets (lista) en vez de data.target; el loader
+devuelve Y/Y_mask (n_obs, n_targets); per_fold tiene un dict por (fold, trait); y
+summary agrega por trait y expone pearson_r_GY (el Pearson de GY de los folds de
+scoring) como métrica que optimiza el sweep, no el promedio simple de los traits.
 """
 from __future__ import annotations
 
@@ -29,7 +25,6 @@ from src.eval.metrics import (
 )
 from src.eval.splits import assert_no_line_leakage
 from src.models.registry import build_model
-# Reusa el armado de folds y los helpers de la ruta single-task (sin duplicar).
 from src.training.run import LogFn, _build_folds, _CI_METRICS, _is_summary_metric, _noop
 
 
@@ -45,8 +40,8 @@ def run_multitask_evaluation(
         data.targets (lista de traits), data.env
         model.name = "mlp_multitask" (+ model.params, incl. loss_weights)
 
-    Devuelve dict con ``per_fold`` (un elemento por fold×trait), ``summary`` (agregado
-    por trait + ``pearson_r_GY``), ``predictions`` (por fold×trait, enmascaradas) y el
+    Devuelve dict con per_fold (un elemento por fold×trait), summary (agregado
+    por trait + pearson_r_GY), predictions (por fold×trait, enmascaradas) y el
     resto del bookkeeping (bootstrap, histories, models).
     """
     log = log_fn or _noop
@@ -55,23 +50,18 @@ def run_multitask_evaluation(
     boot_cfg = config.get("bootstrap", {})
     seed = int(config.get("seed", 575))
 
-    # --- Carga + arrays multitask (Y, Y_mask) --------------------------------
     dataset = load_dataset(data_cfg["geno_csv"], data_cfg["pheno_csv"])
-    env = data_cfg.get("env")  # None => apila optimal + drought (solo modo trait-multitask)
+    env = data_cfg.get("env")
     if data_cfg.get("multi_trait_env"):
-        # MULTI-TRAIT × MULTI-AMBIENTE: TODAS las combinaciones trait×ambiente como cabezas
-        # (p.ej. GY/PH/AD × optimal/drought = 6). Tronco compartido, una cabeza por combinación.
         trait_list = list(data_cfg.get("targets") or list(TARGETS))
         envs = list(data_cfg.get("envs") or list(ENVIRONMENTS))
         arrays = dataset.to_modeling_arrays_multi_trait_env(targets=trait_list, envs=envs)
-        targets = [f"{t}_{e}" for t in trait_list for e in envs]  # nombres de cabeza = columnas de Y
+        targets = [f"{t}_{e}" for t in trait_list for e in envs]
     elif data_cfg.get("multienv"):
-        # Multi-AMBIENTE: UN trait, varios ambientes como cabezas (tronco compartido,
-        # una cabeza por ambiente). El loader arma Y=[target_env...] por (GID, Year).
         target = data_cfg.get("target", "GY")
         envs = list(data_cfg.get("envs") or list(ENVIRONMENTS))
         arrays = dataset.to_modeling_arrays_multienv(target=target, envs=envs)
-        targets = [f"{target}_{e}" for e in envs]  # nombres de cabeza (= columnas de Y)
+        targets = [f"{target}_{e}" for e in envs]
     else:
         targets = list(data_cfg.get("targets") or [])
         if not targets:
@@ -81,7 +71,6 @@ def run_multitask_evaluation(
             )
         arrays = dataset.to_modeling_arrays_multitask(targets=targets, env=env)
 
-    # --- Split(s) temporal(es) + disjuntos por línea (idéntico a single-task) -
     folds = _build_folds(cv_cfg, arrays.year, arrays.line_id)
     if not folds:
         raise RuntimeError(
@@ -96,7 +85,7 @@ def run_multitask_evaluation(
     preds: list[dict[str, Any]] = []
 
     for i, (train_idx, val_idx, scoring) in enumerate(folds):
-        assert_no_line_leakage(train_idx, val_idx, arrays.line_id)  # regla 2 (guard duro)
+        assert_no_line_leakage(train_idx, val_idx, arrays.line_id)
         if len(val_idx) == 0:
             log({"fold": i, "skipped_empty_val": 1})
             continue
@@ -104,9 +93,7 @@ def run_multitask_evaluation(
         X_tr, Y_tr, M_tr = arrays.X[train_idx], arrays.Y[train_idx], arrays.Y_mask[train_idx]
         X_va, Y_va, M_va = arrays.X[val_idx], arrays.Y[val_idx], arrays.Y_mask[val_idx]
 
-        model = build_model(config)  # mlp_multitask fresco por fold (sin fuga de estado)
-        # Contexto del fold: target_names para alinear loss_weights con las columnas de Y;
-        # eval_* = val del fold SOLO para la curva por época (sin selección => sin leakage).
+        model = build_model(config)
         model.set_fit_context(
             year=arrays.year[train_idx],
             line_id=arrays.line_id[train_idx],
@@ -116,23 +103,19 @@ def run_multitask_evaluation(
             eval_Ymask=M_va,
         )
         model.fit(X_tr, Y_tr, M_tr)
-        Yhat = np.asarray(model.predict(X_va), dtype=float)  # (n_val, n_targets)
-        fitted_params = model.get_fitted_params()             # compartidos por todas las cabezas
+        Yhat = np.asarray(model.predict(X_va), dtype=float)
+        fitted_params = model.get_fitted_params()
 
         train_years = sorted(set(int(y) for y in arrays.year[train_idx]))
         val_years = sorted(set(int(y) for y in arrays.year[val_idx]))
         val_year = val_years[0] if len(val_years) == 1 else str(val_years)
         role = "scoring" if scoring else "report"
 
-        # --- Métricas POR trait, aplicando su máscara (solo datos reales) -----
         for j, trait in enumerate(targets):
             col = np.asarray(M_va[:, j], dtype=bool)
             yt = Y_va[col, j]
             yp = Yhat[col, j]
             m: dict[str, Any] = regression_metrics(yt, yp)
-            # matching20: utilidad de selección del top-20% (higher_is_better=True por
-            # convención del repo; el ranking truncado solo es plenamente interpretable
-            # para GY —más rinde = mejor—, se reporta igual para los tres).
             m["matching20"] = coincidence_index(yt, yp, 0.2)
             m.update(
                 fold=i,
@@ -150,7 +133,7 @@ def run_multitask_evaluation(
             if boot_cfg.get("enabled", False) and int(col.sum()) >= 2:
                 ci = bootstrap_ci(
                     yt, yp, _CI_METRICS,
-                    group=np.asarray(arrays.line_id[val_idx])[col],  # cluster por línea (solo reales)
+                    group=np.asarray(arrays.line_id[val_idx])[col],
                     n_boot=int(boot_cfg.get("n_boot", 1000)),
                     alpha=float(boot_cfg.get("alpha", 0.05)),
                     seed=seed + i,
@@ -174,7 +157,6 @@ def run_multitask_evaluation(
             tag = f"f{i}_{trait}_{role}_{val_year}"
             log({f"{tag}/{k}": v for k, v in m.items()})
 
-        # Curva de entrenamiento por época (una por fold; red compartida).
         hist = getattr(model, "history_", None)
         if hist:
             histories.append({"fold": i, "history": list(hist)})
@@ -192,7 +174,6 @@ def run_multitask_evaluation(
             "Probá enforce_disjoint_lines: false."
         )
 
-    # --- Resumen POR trait + headline GY para el sweep -----------------------
     summary: dict[str, float] = {}
     for trait in targets:
         scoring_t = [f for f in per_fold if f.get("trait") == trait and f.get("role") == "scoring"]
@@ -201,11 +182,7 @@ def run_multitask_evaluation(
         )
         for k, v in s.items():
             summary[f"{trait}/{k}"] = v
-    # El sweep optimiza Pearson de la PORTADA DIRECTAMENTE (no el promedio de traits).
-    # Multi-ambiente: la portada es el trait en el ambiente `cover_env` (default drought,
-    # el caso donde la red supera a GBLUP); trait-multitask: GY.
     if data_cfg.get("multi_trait_env"):
-        # Portada = GY en el ambiente de cover (default drought) entre las 6 cabezas.
         primary = f"GY_{data_cfg.get('cover_env', 'drought')}"
         if primary not in targets:
             primary = targets[0]

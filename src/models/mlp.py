@@ -1,52 +1,24 @@
-"""MLP — perceptrón multicapa (PyTorch) para regresión genómica.
+"""MLP baseline (PyTorch) para regresión genómica.
 
-Red neuronal *baseline* que toma los marcadores crudos como capa de entrada y
-predice un fenotipo continuo (por defecto GY óptimo) con una cabeza de regresión
-lineal. Respeta la interfaz común (`fit`/`predict`) y se enchufa en
-`run_evaluation` como cualquier otro modelo.
+Toma los marcadores crudos como entrada y predice un fenotipo continuo con una
+cabeza lineal. Hace su preprocesamiento train-only dentro de fit (z-score de
+features y del target con la media/desvío del train), por eso no usa el bloque
+preprocess: ni PreprocessedModel: todo el preproceso viaja dentro del checkpoint
+torch, que serializa state_dict + arquitectura.
 
-Decisiones de diseño alineadas con las reglas del proyecto:
+Con params.patience se activa early stopping reservando el último año del train
+como inner-val solo para elegir el número de épocas; después se reentrena el modelo
+final con todo el train del fold. Con un solo año de train se usa max_epochs fijo.
 
-- **Sin leakage (regla 1).** El modelo hace su preprocesamiento train-only
-  DENTRO de `fit`: estandariza las features (z-score por SNP) y el target con la
-  media/desvío del train. En la selección interna de épocas (early stopping) los
-  estadísticos se recomputan con el inner-train. Por eso este modelo **no usa el
-  bloque `preprocess:`** ni `PreprocessedModel`: ese wrapper persiste con joblib
-  (picklearía el `nn.Module`), lo que choca con el contrato de que los modelos
-  torch serializan `state_dict` + arquitectura. Todo el preprocesamiento viaja
-  dentro del checkpoint torch.
-- **Validación temporal en la selección interna (regla 3).** Con `params.patience`
-  se activa early stopping reservando el ÚLTIMO año del train como inner-val
-  (p.ej. 2017 -> 2018) solo para elegir cuántas épocas entrenar. Luego, por
-  default, se reentrena un modelo final desde cero con TODO el train del fold
-  (p.ej. 2017+2018) por el número de épocas seleccionado. El val/test externo no
-  se toca. Si hay un solo año en train, se entrena `max_epochs` fijo.
-- **Pérdida configurable: MSE, Pearson o Pearson+MSE.** La regla 4 (BCE) aplica a
-  autoencoders que reconstruyen SNPs binarios; acá la salida es un fenotipo
-  continuo. Por `params.loss` se elige entre ``"mse"`` (default, convención
-  segura), ``"pearson"`` (minimiza ``1 - r``, optimizando directamente la
-  métrica de portada, regla 5) y ``"pearson_mse"``. El r es invariante a
-  transformaciones afines, así que con la pérdida Pearson pura la salida queda sin
-  calibrar en escala (RMSE/R² dejan de ser informativos; el Pearson —lo que
-  importa— no se ve afectado). ``"pearson_mse"`` suma ``mse_weight·MSE`` (sobre el
-  target estandarizado): mantiene el ranking que da el término Pearson pero ancla
-  la escala, así RMSE/R² vuelven a ser informativos (``mse_weight`` regula el
-  trade-off; default 0.3).
-- **Reproducibilidad.** `random_state` siembra el RNG de torch dentro de `fit`
-  (la seed global de `set_seed` no alcanza para fijar la inicialización de pesos
-  de forma independiente por fold).
+La loss se elige por params.loss: "mse" (default), "pearson" (minimiza 1 - r,
+optimiza la métrica de portada) o "pearson_mse". Como el r es invariante a afines,
+con "pearson" pura la salida queda sin escala calibrada (RMSE/R² dejan de ser
+comparables, el Pearson no se ve afectado); "pearson_mse" suma mse_weight*MSE para
+anclar la escala.
 
-Persistencia: override de `save`/`load` (regla del proyecto para modelos torch).
-El checkpoint guarda arquitectura + `state_dict` + estadísticos de escala +
-diagnóstico, así `load_model_artifact` lo reconstruye sin reentrenar.
-
-`get_fitted_params` expone épocas seleccionadas, mejor época / pérdida de
-inner-val y tamaño de la red para que `run_evaluation`/`train.py` los logueen.
-El historial por época queda en `self.history_` (`train_loss` siempre; `val_loss` y
-`val_pearson` cuando hay inner-val de early stopping O cuando `run_evaluation` pasa el
-val del fold como set de MONITOREO vía `set_fit_context(eval_X=, eval_y=)`). Ese
-monitoreo es solo para la curva — nunca selecciona ni entrena sobre el val (sin
-leakage). `train.py` lo loguea por época a wandb (`curve/train_loss`, `curve/val_*`).
+save/load guardan arquitectura + state_dict + escalas + diagnóstico. history_ lleva
+la curva por época (train_loss siempre; val_* cuando hay inner-val o cuando se pasa
+el val del fold como monitoreo, que nunca selecciona ni entrena sobre el val).
 """
 from __future__ import annotations
 
@@ -73,15 +45,12 @@ _PEARSON_EPS = 1e-8
 
 
 def pearson_loss(pred: torch.Tensor, target: torch.Tensor, *, eps: float = _PEARSON_EPS) -> torch.Tensor:
-    """Pérdida ``1 - r`` de Pearson (diferenciable) entre predicción y target.
+    """Pérdida 1 - r de Pearson (diferenciable) entre predicción y target.
 
-    Maximizar el Pearson (métrica de portada, regla 5) equivale a minimizar
-    ``1 - r``. Usa medias (``ddof=0``), igual que `src.eval.metrics.pearson_r`, así
-    la pérdida y la métrica de evaluación coinciden. El r es invariante a
-    transformaciones afines de cada variable, de modo que da lo mismo que el target
-    venga estandarizado o crudo. Necesita un batch con >=2 muestras y varianza no
-    nula en ``pred``; con un batch degenerado (1 muestra o predicción constante) el
-    denominador colapsa y el ``eps`` evita el NaN devolviendo ~1.
+    Usa medias con ddof=0, igual que src.eval.metrics.pearson_r, para que la pérdida
+    y la métrica coincidan. El r es invariante a afines, así que da lo mismo el target
+    crudo o estandarizado. Necesita >=2 muestras y varianza no nula en pred; con un
+    batch degenerado el eps evita el NaN devolviendo ~1.
     """
     pred = pred.reshape(-1)
     target = target.reshape(-1)
@@ -91,9 +60,6 @@ def pearson_loss(pred: torch.Tensor, target: torch.Tensor, *, eps: float = _PEAR
     denom = torch.sqrt((pred_c ** 2).mean() + eps) * torch.sqrt((target_c ** 2).mean() + eps)
     return 1.0 - cov / (denom + eps)
 
-# Hiperparámetros por defecto: una red chica y regularizada, punto de partida
-# razonable para p >> n (una capa oculta angosta, dropout fuerte en la entrada y
-# en la capa oculta, weight decay). Se overridean por `model.params` en el YAML.
 _DEFAULTS: dict[str, Any] = {
     "hidden_dims": [256],
     "dropout": 0.5,
@@ -104,25 +70,25 @@ _DEFAULTS: dict[str, Any] = {
     "weight_decay": 1e-4,
     "batch_size": 64,
     "max_epochs": 200,
-    "loss": "mse",            # "mse" | "pearson" (1 - r) | "pearson_mse" (1 - r + w·MSE)
-    "mse_weight": 0.3,        # peso del término MSE cuando loss="pearson_mse"
-    "patience": None,         # None => sin early stopping
+    "loss": "mse",
+    "mse_weight": 0.3,
+    "patience": None,
     "eval_scheme": "temporal",
     "refit_full_train": True,
-    "val_metric": "loss",     # "loss" (pérdida inner-val) | "pearson"
+    "val_metric": "loss",
     "min_delta": 0.0,
     "standardize_inputs": True,
     "standardize_target": True,
     "random_state": 575,
-    "device": "cpu",          # "cpu" | "cuda" | "auto"
+    "device": "cpu",
 }
 
 
 def temporal_inner_split(years: np.ndarray | None) -> tuple[np.ndarray, np.ndarray] | None:
     """Inner-split temporal dentro del train: años previos vs. último año.
 
-    Devuelve ``(idx_inner_train, idx_inner_val)`` con el último año como inner-val,
-    o ``None`` si no hay al menos 2 años distintos (no se puede partir por año).
+    Devuelve (idx_inner_train, idx_inner_val) con el último año como inner-val, o None
+    si no hay al menos 2 años distintos.
     """
     if years is None:
         return None
@@ -137,9 +103,8 @@ def temporal_inner_split(years: np.ndarray | None) -> tuple[np.ndarray, np.ndarr
 class _MLPNet(nn.Module):
     """Red feed-forward: [Dropout entrada] -> bloques (Linear[, BN], act, Dropout) -> Linear(out_dim).
 
-    ``out_dim`` (default 1) define el ancho de la cabeza de salida. Con ``out_dim=1``
-    el forward hace squeeze a ``(n,)`` (ruta single-task, comportamiento idéntico al
-    histórico); con ``out_dim>1`` devuelve ``(n, out_dim)`` para el caso multitask.
+    out_dim (default 1) es el ancho de la cabeza. Con out_dim=1 el forward hace squeeze
+    a (n,) (single-task); con out_dim>1 devuelve (n, out_dim) para el caso multitask.
     """
 
     def __init__(
@@ -183,7 +148,7 @@ class _MLPNet(nn.Module):
 class MLPRegressor(BaseModel):
     """Perceptrón multicapa (PyTorch) para regresión de un fenotipo.
 
-    `params` (sub-dict `model.params` del config):
+    params (sub-dict model.params del config):
         hidden_dims        : lista de anchos de capas ocultas (default [256]).
         dropout            : dropout tras cada capa oculta (default 0.5).
         input_dropout      : dropout sobre la entrada (default 0.2).
@@ -193,9 +158,9 @@ class MLPRegressor(BaseModel):
         weight_decay       : L2 de Adam (default 1e-4).
         batch_size         : tamaño de minibatch; <=0 o >= n => full-batch (default 64).
         max_epochs         : épocas máximas (default 200).
-        loss               : "mse" (default) | "pearson" | "pearson_mse". Pérdida que
-            minimiza el optimizador; "pearson" minimiza ``1 - r`` (optimiza la portada,
-            regla 5); "pearson_mse" suma ``mse_weight·MSE`` para recalibrar la escala.
+        loss               : "mse" (default) | "pearson" | "pearson_mse". "pearson"
+            minimiza 1 - r (optimiza la portada); "pearson_mse" suma mse_weight*MSE
+            para recalibrar la escala.
         mse_weight         : peso del término MSE en "pearson_mse" (default 0.3). Solo
             se usa con esa pérdida; ignorado con "mse"/"pearson".
         patience           : int opcional. Si está, activa early stopping con un
@@ -211,7 +176,6 @@ class MLPRegressor(BaseModel):
         device             : "cpu" | "cuda" | "auto" (default cpu).
     """
 
-    # --- Resolución de hiperparámetros --------------------------------------
 
     def _resolve_cfg(self) -> dict[str, Any]:
         cfg = {**_DEFAULTS, **{k: v for k, v in self.params.items() if k in _DEFAULTS}}
@@ -247,14 +211,13 @@ class MLPRegressor(BaseModel):
             raise ValueError("MLPRegressor.fit recibió y vacío.")
         return y
 
-    # --- Estandarización train-only -----------------------------------------
 
     def _compute_scalers(self, X: np.ndarray, y: np.ndarray, cfg: dict[str, Any]):
-        """Estadísticos de escala con datos de TRAIN (regla 1)."""
+        """Estadísticos de escala con datos de train."""
         if cfg["standardize_inputs"]:
             x_mean = X.mean(axis=0)
             x_std = X.std(axis=0)
-            x_std = np.where(x_std == 0.0, 1.0, x_std)  # SNP constante en train
+            x_std = np.where(x_std == 0.0, 1.0, x_std)
         else:
             x_mean = np.zeros(X.shape[1])
             x_std = np.ones(X.shape[1])
@@ -276,12 +239,11 @@ class MLPRegressor(BaseModel):
         return (np.asarray(X, dtype=np.float64) - x_mean) / x_std
 
     def _monitor_val(self) -> tuple[np.ndarray, np.ndarray] | None:
-        """Val externo del fold (de `set_fit_context`) para MONITOREAR la curva por época.
+        """Val externo del fold (de set_fit_context) para la curva por época.
 
-        Lo estandariza con los scalers de train ya ajustados (``x_mean_``/``y_mean_`` ...) y lo
-        devuelve como ``(Xv_std, yv_std)``, o ``None`` si no se pasó o no matchea. Es solo para
-        registrar ``val_loss``/``val_pearson`` por época: se usa con ``patience=None`` ⇒ no corta
-        ni restaura ⇒ no selecciona nada (sin leakage). Requiere los scalers ya calculados.
+        Lo estandariza con los scalers de train ya ajustados y devuelve (Xv_std, yv_std),
+        o None si no se pasó o no matchea. Solo registra val_loss/val_pearson por época
+        (se usa con patience=None, así que no corta ni selecciona nada).
         """
         Xe = self._fit_context.get("eval_X")
         ye = self._fit_context.get("eval_y")
@@ -293,7 +255,6 @@ class MLPRegressor(BaseModel):
             return None
         return self._apply_x(Xe, self.x_mean_, self.x_std_), (ye - self.y_mean_) / self.y_std_
 
-    # --- Loop de entrenamiento ----------------------------------------------
 
     def _build_net(self, in_dim: int, cfg: dict[str, Any]) -> _MLPNet:
         return _MLPNet(
@@ -320,9 +281,9 @@ class MLPRegressor(BaseModel):
     ):
         """Entrena la red. Devuelve (net, history, best_epoch, best_val).
 
-        Con ``Xv`` se trackea inner-val por época (loss según ``cfg.loss`` + pearson). Si
-        ``patience`` está y la métrica de val no mejora ``patience`` épocas
-        seguidas, corta. Con ``restore_best`` deja los pesos de la mejor época.
+        Con Xv trackea inner-val por época (loss según cfg.loss + pearson). Si patience
+        está y la métrica no mejora patience épocas seguidas, corta. Con restore_best
+        deja los pesos de la mejor época.
         """
         net = self._build_net(Xs.shape[1], cfg).to(device)
         optim = torch.optim.Adam(net.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
@@ -331,9 +292,6 @@ class MLPRegressor(BaseModel):
         elif cfg["loss"] == "pearson":
             loss_fn = pearson_loss
         elif cfg["loss"] == "pearson_mse":
-            # 1 - r + w·MSE: el término Pearson manda el ranking (portada), el MSE
-            # ancla la escala (sobre el target ya estandarizado) ⇒ RMSE/R² vuelven a
-            # ser informativos. Reusa pearson_loss y nn.MSELoss.
             _mse = nn.MSELoss()
             _w = cfg["mse_weight"]
 
@@ -343,9 +301,6 @@ class MLPRegressor(BaseModel):
             raise ValueError(
                 f"loss desconocida: {cfg['loss']!r}. Disponibles: 'mse', 'pearson', 'pearson_mse'."
             )
-        # La pérdida Pearson necesita >=2 muestras por batch (un batch de 1 da r
-        # indefinido), igual que BatchNorm: en ambos casos se descarta la cola de 1.
-        # pearson_mse incluye el término Pearson ⇒ mismo cuidado.
         drop_singleton = cfg["batchnorm"] or cfg["loss"] in ("pearson", "pearson_mse")
 
         Xt = torch.as_tensor(Xs, dtype=torch.float32, device=device)
@@ -360,7 +315,7 @@ class MLPRegressor(BaseModel):
         full_batch = bs <= 0 or bs >= n
 
         history: list[dict[str, float]] = []
-        best_score = np.inf      # se minimiza (val_metric="pearson" => -pearson)
+        best_score = np.inf
         best_epoch = -1
         best_val: dict[str, float] = {}
         best_state: dict[str, torch.Tensor] | None = None
@@ -373,7 +328,6 @@ class MLPRegressor(BaseModel):
             else:
                 perm = torch.randperm(n, device=device)
                 batches = list(torch.split(perm, bs))
-                # BatchNorm y la pérdida Pearson rompen con un batch de tamaño 1.
                 if drop_singleton and batches and batches[-1].numel() == 1:
                     batches = batches[:-1]
             run_loss = 0.0
@@ -418,7 +372,6 @@ class MLPRegressor(BaseModel):
             net.load_state_dict(best_state)
         return net, history, best_epoch, best_val
 
-    # --- Interfaz BaseModel -------------------------------------------------
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "MLPRegressor":
         cfg = self._resolve_cfg()
@@ -439,14 +392,11 @@ class MLPRegressor(BaseModel):
             else None
         )
 
-        # --- Sin early stopping: entrena max_epochs sobre todo el train ------
         if split is None:
             self._seed(cfg["random_state"])
             self.x_mean_, self.x_std_, self.y_mean_, self.y_std_ = self._compute_scalers(X, y, cfg)
             Xs = self._apply_x(X, self.x_mean_, self.x_std_)
             ys = (y - self.y_mean_) / self.y_std_
-            # Val del fold (si run_evaluation lo pasó) SOLO para la curva por época: patience=None
-            # y restore_best=False ⇒ no corta ni restaura ⇒ la red final es idéntica (sin leakage).
             mon = self._monitor_val()
             Xv, yv = mon if mon is not None else (None, None)
             net, history, _, _ = self._train(
@@ -462,9 +412,7 @@ class MLPRegressor(BaseModel):
             self._finalize(device)
             return self
 
-        # --- Early stopping temporal: selecciona épocas con inner-val --------
         tr, va = split
-        # Estandarización SOLO con el inner-train (sin leakage en la selección).
         xm, xs, ym, ys_std = self._compute_scalers(X[tr], y[tr], cfg)
         Xtr = self._apply_x(X[tr], xm, xs)
         ytr = (y[tr] - ym) / ys_std
@@ -489,8 +437,6 @@ class MLPRegressor(BaseModel):
         self.refit_full_train_ = bool(cfg["refit_full_train"])
 
         if cfg["refit_full_train"]:
-            # Modelo final: todo el train externo, escalado re-ajustado a todo el
-            # train, por las épocas elegidas con el split temporal interno.
             self._seed(cfg["random_state"])
             self.x_mean_, self.x_std_, self.y_mean_, self.y_std_ = self._compute_scalers(X, y, cfg)
             Xs = self._apply_x(X, self.x_mean_, self.x_std_)
@@ -500,8 +446,6 @@ class MLPRegressor(BaseModel):
             )
             self.net_ = net
         else:
-            # Se conserva la red de selección (entrenada solo con el inner-train)
-            # con sus estadísticos de inner-train.
             self.x_mean_, self.x_std_, self.y_mean_, self.y_std_ = xm, xs, ym, ys_std
             self.net_ = sel_net
         self._finalize(device)
@@ -532,7 +476,7 @@ class MLPRegressor(BaseModel):
             "early_stopping_used": int(getattr(self, "early_stopping_used_", False)),
             "refit_full_train": int(getattr(self, "refit_full_train_", False)),
             "n_params": getattr(self, "n_params_", None),
-            "hidden_dims": str(self.cfg_["hidden_dims"]),  # no-numérico => metadata
+            "hidden_dims": str(self.cfg_["hidden_dims"]),
         }
         if getattr(self, "best_epoch_", None) is not None:
             out["best_epoch"] = self.best_epoch_
@@ -543,7 +487,6 @@ class MLPRegressor(BaseModel):
                 out["best_val_pearson"] = float(self.best_val_["val_pearson"])
         return out
 
-    # --- Persistencia (override torch: state_dict + arquitectura) -----------
 
     def save(self, path: str | Path) -> Path:
         if not hasattr(self, "net_"):

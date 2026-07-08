@@ -1,7 +1,7 @@
 """Evaluación centralizada: métricas y splits antileakage.
 
-Ningún modelo reimplementa estas piezas. Las métricas viven en `metrics.py` y
-el split temporal fijo + el guard antileakage en `splits.py`.
+Ningún modelo reimplementa estas piezas. Las métricas viven en metrics.py y
+el split temporal fijo + el guard antileakage en splits.py.
 """
 from src.eval.metrics import (
     pearson_r,

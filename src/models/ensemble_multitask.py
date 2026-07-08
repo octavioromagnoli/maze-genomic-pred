@@ -1,23 +1,15 @@
-"""Ensemble de seeds del MLP multitask: entrena K redes y promedia sus predicciones.
+"""Ensemble de seeds de la red multitask: entrena K redes y promedia sus predicciones.
 
-Motivación (winner's curse): el Pearson de UNA sola seed en el inner-val es ruidoso, así que un
-sweep que selecciona HP por ese número **overfittea el inner-val y no generaliza** (verificado en
-este proyecto para el multienv: el mejor single-seed falla la regla de oro). La solución es que
-**cada trial del sweep evalúe un ENSEMBLE de K seeds**: el ``pearson_r_GY`` que optimiza el sweep
-pasa a ser el del ensemble (estable), y el modelo final desplegado ES ese mismo ensemble. Así la
-ventaja que elige el sweep se sostiene.
+El Pearson de una sola seed en el inner-val es ruidoso, así que un sweep que elige HP
+por ese número tiende a overfittear el inner-val. Evaluar cada trial como un ensemble
+de K seeds estabiliza la métrica, y el modelo final desplegado es ese mismo ensemble.
 
-Envuelve un modelo multitarea inner (no reimplementa la red). Por defecto ``mlp_multitask``, pero
-el inner es configurable por ``inner_name`` (cualquier subclase de `MLPMultitaskRegressor` del
-REGISTRY, p.ej. ``moe_soft_multitask``) → el mismo mecanismo de ensemble sirve para robustecer el
-soft MoE contra el winner's curse. Entrena ``n_models`` copias con seeds
-``inner.random_state + i*seed_step`` y promedia las predicciones **estandarizadas por columna**
-(la pérdida Pearson deja la escala de cada red arbitraria ⇒ sin estandarizar, la red de mayor
-varianza domina y el "ensemble" colapsa a ella). La estandarización usa los estadísticos de las
-predicciones de TRAIN de cada sub-modelo (sin leakage, independiente del batch de inferencia).
-
-Se enchufa en `run_multitask_evaluation` (interfaz ``fit(X, Y, Y_mask)`` / ``predict(X) -> (n, T)``)
-igual que `mlp_multitask`; el dispatch multitask de `scripts/train.py` lo incluye por nombre.
+Envuelve un modelo multitarea inner (por default mlp_multitask, configurable por
+inner_name a cualquier subclase de MLPMultitaskRegressor del REGISTRY, p.ej.
+moe_soft_multitask). Entrena n_models copias con seeds random_state + i*seed_step y
+promedia las predicciones estandarizadas por columna: la loss Pearson deja la escala
+de cada red arbitraria, así que sin estandarizar la de mayor varianza dominaría. La
+estandarización usa los estadísticos de las predicciones de train de cada sub-modelo.
 """
 from __future__ import annotations
 
@@ -31,15 +23,15 @@ from src.models.mlp_multitask import MLPMultitaskRegressor
 
 
 class EnsembleMultitaskRegressor(BaseModel):
-    """Ensemble de ``n_models`` `MLPMultitaskRegressor` (promedio z-scoreado por columna).
+    """Ensemble de n_models MLPMultitaskRegressor (promedio z-scoreado por columna).
 
-    `params` (sub-dict ``model.params`` del config):
-        inner      : dict de params del modelo inner (arquitectura, loss, loss_weights,
-                     random_state base, ...). Es lo que barre el sweep (``model.params.inner.*``).
-        inner_name : nombre en el REGISTRY del modelo a ensemblar (default ``mlp_multitask``;
-                     p.ej. ``moe_soft_multitask``). Debe ser subclase de `MLPMultitaskRegressor`.
+    params:
+        inner      : params del modelo inner (arquitectura, loss, loss_weights,
+                     random_state base). Es lo que barre el sweep.
+        inner_name : nombre en el REGISTRY del modelo a ensemblar (default mlp_multitask;
+                     debe ser subclase de MLPMultitaskRegressor).
         n_models   : cantidad de seeds del ensemble (default 5).
-        seed_step  : separación entre seeds; seed_i = inner.random_state + i*seed_step (default 1000).
+        seed_step  : separación entre seeds; seed_i = random_state + i*seed_step (default 1000).
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -52,11 +44,11 @@ class EnsembleMultitaskRegressor(BaseModel):
     def _resolve_inner_cls(self) -> type[MLPMultitaskRegressor]:
         """Clase inner del ensemble, resuelta por nombre desde el REGISTRY.
 
-        Import perezoso de `registry` para evitar el ciclo (registry importa este módulo). Se exige
-        subclase de `MLPMultitaskRegressor`: el promedio z-scoreado por columna asume la interfaz
-        multitarea ``fit(X, Y, mask)`` / ``predict -> (n, T)`` con loss de escala arbitraria.
+        Import perezoso del registry para evitar el ciclo (registry importa este módulo).
+        Se exige subclase de MLPMultitaskRegressor porque el promedio z-scoreado asume la
+        interfaz multitarea fit(X, Y, mask) / predict -> (n, T).
         """
-        from src.models.registry import REGISTRY  # perezoso: evita import circular con registry
+        from src.models.registry import REGISTRY
 
         try:
             cls = REGISTRY[self.inner_name]
@@ -71,7 +63,6 @@ class EnsembleMultitaskRegressor(BaseModel):
             )
         return cls
 
-    # --- Interfaz BaseModel -------------------------------------------------
 
     def fit(self, X: np.ndarray, Y: np.ndarray, Y_mask: np.ndarray | None = None) -> "EnsembleMultitaskRegressor":
         ctx = self._fit_context
@@ -83,20 +74,16 @@ class EnsembleMultitaskRegressor(BaseModel):
             p = dict(self.inner_params)
             p["random_state"] = base_seed + i * self.seed_step
             m = inner_cls({"params": p})
-            # Solo propaga target_names (alinea loss_weights con las columnas de Y) + year/line_id;
-            # NO el val de monitoreo (eval_*): el ensemble no lo necesita y así es más rápido.
             m.set_fit_context(
                 year=ctx.get("year"), line_id=ctx.get("line_id"), target_names=ctx.get("target_names")
             )
             m.fit(X, Y, Y_mask)
-            # Estadísticos de estandarización por columna desde las predicciones de TRAIN (sin leakage).
             ptr = self._as_2d(m.predict(X))
             mu = ptr.mean(axis=0, keepdims=True)
             sd = ptr.std(axis=0, keepdims=True)
             sd = np.where(sd < 1e-12, 1.0, sd)
             self.models_.append(m)
             self.scalers_.append((mu, sd))
-        # Expone la learning curve de la primera red (para que run.py la loguee).
         self.history_ = getattr(self.models_[0], "history_", [])
         return self
 
@@ -123,17 +110,16 @@ class EnsembleMultitaskRegressor(BaseModel):
             "n_models": int(self.n_models),
             "seed_step": int(self.seed_step),
             "n_params": int(getattr(first, "n_params_", 0) or 0) * self.n_models,
-            "inner_name": self.inner_name,                                    # no-numérico => metadata
-            "inner_hidden_dims": str(self.inner_params.get("hidden_dims")),  # no-numérico => metadata
+            "inner_name": self.inner_name,
+            "inner_hidden_dims": str(self.inner_params.get("hidden_dims")),
         }
 
-    # --- Persistencia (override: cada sub-modelo es torch) ------------------
 
     def save(self, path: str | Path) -> Path:
         """Guarda cada sub-red (torch nativo) como archivo hermano + un manifiesto joblib.
 
-        `save_model_artifact` sube el directorio entero, así que al bajar el artifact los
-        ``submodel_i.pt`` quedan junto al manifiesto y `load` los reencuentra.
+        El artifact sube el directorio entero, así que al bajarlo los submodel_i.pt
+        quedan junto al manifiesto y load los reencuentra.
         """
         import joblib
 
@@ -164,7 +150,7 @@ class EnsembleMultitaskRegressor(BaseModel):
         path = Path(path)
         d = joblib.load(path)
         obj = cls(d.get("config"))
-        obj.inner_name = str(d.get("inner_name", "mlp_multitask"))  # default: artifacts viejos = MLP
+        obj.inner_name = str(d.get("inner_name", "mlp_multitask"))
         obj.n_models = int(d["n_models"])
         obj.seed_step = int(d["seed_step"])
         inner_cls = obj._resolve_inner_cls()

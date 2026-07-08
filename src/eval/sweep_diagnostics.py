@@ -1,35 +1,21 @@
 """Diagnóstico de un sweep: ¿el ranking en val (2018) se sostiene en el reporte (2019)?
 
-Motivación. Un sweep rankea sus trials por la métrica de selección sobre **val 2018**
-(train 2017). El reporte final reentrena en **2017+2018** y mide sobre **2019**. Que el
-top-1 en 2018 sea el mejor en 2019 NO está garantizado: con n chico y Pearson de alta
-varianza, los primeros trials de un sweep bayesiano son casi clones y su orden se
-reordena al cambiar de año. Elegir "el k-ésimo del sweep" porque gana en 2019 es
-seleccionar sobre el set de reporte (winner's curse; ver `src/training/select.py`):
-infla el número y rompe la comparación contra el baseline.
+Un sweep rankea sus trials por la métrica sobre val 2018 (train 2017), pero el reporte
+reentrena en 2017+2018 y mide sobre 2019. Que el top-1 en 2018 sea el mejor en 2019 no
+está garantizado, y quedarse con "el k-ésimo porque gana en 2019" es seleccionar sobre
+el set de reporte (winner's curse). Este módulo arma la evidencia para elegir sin sesgo:
 
-Este módulo arma la evidencia para elegir HONESTAMENTE, sin tocar 2020:
+- Selección (val 2018), multi-seed: reevalúa el top-k variando la seed y reporta
+  media ± sd; un trial cuya ventaja sobrevive al cambio de seed es robusto. No mira 2019.
+- Reporte (2019): reentrena cada trial en 2017+2018 y mide Pearson + IC95% (bootstrap
+  cluster por línea) sobre 2019. Es un análisis de sensibilidad, no la excusa para
+  quedarse con el que más sube.
+- HP: devuelve los HP barridos de cada trial para leer qué tienen en común los buenos.
 
-- **Selección (val 2018), multi-seed.** Reevalúa el top-k del sweep variando la seed del
-  modelo y reporta media ± sd del Pearson del trait primario en val 2018. Un trial cuya
-  ventaja sobrevive al cambio de seed es robusto; uno que depende de la seed era ruido.
-  Esta medición NO mira 2019, así que sirve para *decidir* sin sesgo.
-- **Reporte (2019).** Reentrena cada trial en train+val (2017+2018) y mide Pearson +
-  IC95% (bootstrap cluster por línea) sobre 2019. Es el número honesto SIEMPRE que el
-  trial se haya fijado por su comportamiento en 2018, no por este número. Mostrar el
-  top-k acá es un análisis de *sensibilidad* ("¿todos le ganan al baseline?"), no la
-  excusa para quedarse con el que más sube.
-- **HP.** Devuelve los HP barridos de cada trial (incl. ``loss_weights.*``) para leer qué
-  tienen en común los buenos (p.ej. regularización fuerte, peso auxiliar AD en un rango).
-  La elección defendible es por *región de HP*, no por índice del ranking.
-
-Genérico: sirve para cualquier sweep (multitask o single-task) y cualquier env. Detecta
-el tipo desde ``model.name`` del config base y rutea a `run_multitask_evaluation` /
-`run_evaluation`. El año de reporte se deriva del de selección (corre el reloj un año:
-el val pasa a train y el siguiente año es el nuevo val) o se pasa explícito. Reusa el
-caché de `save_model` (no reentrena entre corridas: cada (trial, seed, split) cachea).
-
-2020 queda sellado: este módulo nunca lo evalúa.
+Sirve para cualquier sweep (multitask o single-task) y cualquier env: detecta el tipo
+desde model.name y rutea a run_multitask_evaluation / run_evaluation. El año de reporte
+se deriva del de selección o se pasa explícito. Reusa el caché de save_model. 2020 nunca
+se evalúa acá.
 """
 from __future__ import annotations
 
@@ -50,23 +36,20 @@ from src.training.sweep import top_runs_from_sweep
 from src.utils.config import load_config, set_nested
 from src.utils.seed import set_seed
 
-# Seeds por defecto para el multi-seed de selección. La primera es la del config base
-# (575): su Pearson en 2018 debería reproducir el del trial del sweep (sanity check).
 _DEFAULT_SEEDS: tuple[int, ...] = (575, 576, 577, 578, 579)
 _HP_PREFIX = "model.params."
 
 
-# --- Ruteo multitask / single-task ------------------------------------------
 
 def _is_multitask(cfg: dict[str, Any]) -> bool:
     return str(cfg.get("model", {}).get("name", "")).strip() == "mlp_multitask"
 
 
 def _select_value(res: dict[str, Any], multitask: bool, primary_trait: str) -> float:
-    """Pearson del trait primario en el set de selección, leído del ``summary``.
+    """Pearson del trait primario en el set de selección, leído del summary.
 
-    Multitask expone ``"<trait>/pearson_r_mean"`` (y el alias ``pearson_r_GY``);
-    single-task expone ``pearson_r_mean``. Un único fold de scoring ⇒ es el valor del fold.
+    Multitask expone "<trait>/pearson_r_mean" (y el alias pearson_r_GY);
+    single-task expone pearson_r_mean. Un único fold de scoring => es el valor del fold.
     """
     s = res.get("summary", {})
     if multitask:
@@ -77,10 +60,10 @@ def _select_value(res: dict[str, Any], multitask: bool, primary_trait: str) -> f
 def _report_fold_metrics(
     res: dict[str, Any], multitask: bool, primary_trait: str
 ) -> tuple[float, float, float]:
-    """``(pearson, lo, hi)`` del trait primario en el fold de scoring del reporte.
+    """(pearson, lo, hi) del trait primario en el fold de scoring del reporte.
 
-    En multitask filtra ``trait == primary_trait`` y ``role == "scoring"``; en single-task
-    toma el último fold de scoring (ignora ``trait``). Si no hay IC (bootstrap off) ⇒ NaN.
+    En multitask filtra trait == primary_trait y role == "scoring"; en single-task
+    toma el último fold de scoring (ignora trait). Si no hay IC (bootstrap off) => NaN.
     """
     pf = res.get("per_fold", [])
     if multitask:
@@ -97,16 +80,15 @@ def _report_fold_metrics(
     )
 
 
-# --- Config helpers ---------------------------------------------------------
 
 def derive_report_cv(base_cv: dict[str, Any]) -> dict[str, Any]:
     """Deriva el cv de REPORTE corriendo el reloj un año respecto del de selección.
 
     El val de selección pasa a ser train y el año siguiente es el nuevo val
-    (p.ej. {train [2017], val 2018} ⇒ {train [2017, 2018], val 2019}). Conserva
-    ``scheme``, ``holdout_test_year`` y ``enforce_disjoint_lines``. Levanta error si el
-    nuevo val caería sobre el ``holdout_test_year`` (no se reporta sobre el set sellado):
-    en ese caso pasá ``report_cv`` explícito.
+    (p.ej. {train [2017], val 2018} => {train [2017, 2018], val 2019}). Conserva
+    scheme, holdout_test_year y enforce_disjoint_lines. Levanta error si el
+    nuevo val caería sobre el holdout_test_year (no se reporta sobre el set sellado):
+    en ese caso pasá report_cv explícito.
     """
     val = base_cv.get("val_year")
     if val is None:
@@ -143,7 +125,7 @@ def _cached_eval(
 ) -> dict[str, Any]:
     """Corre la evaluación (multitask o single-task) con el caché en disco del proyecto.
 
-    ``n_boot <= 0`` ⇒ bootstrap apagado (selección rápida, sin IC). La key del caché
+    n_boot <= 0 => bootstrap apagado (selección rápida, sin IC). La key del caché
     incluye seed/cv/model/n_boot, así cada (trial, seed, split) cachea por separado.
     """
     cfg = copy.deepcopy(cfg)
@@ -159,7 +141,6 @@ def _cached_eval(
     return res
 
 
-# --- API pública ------------------------------------------------------------
 
 def evaluate_report_point(
     config: str | dict[str, Any],
@@ -170,11 +151,11 @@ def evaluate_report_point(
     alpha: float = 0.05,
     use_cache: bool = True,
 ) -> tuple[float, float, float]:
-    """``(pearson, lo, hi)`` del trait primario para un config cualquiera en el reporte.
+    """(pearson, lo, hi) del trait primario para un config cualquiera en el reporte.
 
     Útil para traer un baseline (GBLUP, univariado) al MISMO split de reporte y la MISMA
-    métrica que el top-k del sweep, para graficarlos juntos. Si se pasa ``report_cv``, le
-    pisa el ``cv`` al config; si no, usa el del propio config. Detecta multitask/single-task.
+    métrica que el top-k del sweep, para graficarlos juntos. Si se pasa report_cv, le
+    pisa el cv al config; si no, usa el del propio config. Detecta multitask/single-task.
     """
     cfg = load_config(config) if isinstance(config, str) else copy.deepcopy(config)
     multitask = _is_multitask(cfg)
@@ -204,34 +185,34 @@ def diagnose_sweep(
 ) -> pd.DataFrame:
     """Tabla diagnóstica del top-k de un sweep: estabilidad en 2018 vs reporte en 2019.
 
-    Para cada uno de los ``k`` mejores trials (rankeados por la métrica del sweep sobre
+    Para cada uno de los k mejores trials (rankeados por la métrica del sweep sobre
     val 2018) devuelve una fila con:
 
-    - ``sweep_2018_1seed``: la métrica que reportó el trial en el sweep (1 sola seed).
-    - ``sel_2018_mean`` / ``sel_2018_sd`` / ``_min`` / ``_max``: Pearson del trait primario
-      en val 2018 reevaluado con ``seeds`` (robustez de la selección, sin mirar 2019).
-    - ``report_2019`` / ``report_lo`` / ``report_hi``: Pearson + IC95% en el reporte (2019),
+    - sweep_2018_1seed: la métrica que reportó el trial en el sweep (1 sola seed).
+    - sel_2018_mean / sel_2018_sd / _min / _max: Pearson del trait primario
+      en val 2018 reevaluado con seeds (robustez de la selección, sin mirar 2019).
+    - report_2019 / report_lo / report_hi: Pearson + IC95% en el reporte (2019),
       reentrenando en train+val. Es el número honesto del trial (no elijas por él).
-    - una columna por HP barrido (lo que sigue a ``model.params.``, p.ej. ``dropout``,
-      ``weight_decay``, ``hidden_dims``, ``loss_weights.AD``).
+    - una columna por HP barrido (lo que sigue a model.params., p.ej. dropout,
+      weight_decay, hidden_dims, loss_weights.AD).
 
     Args:
-        sweep_path: ``"entity/project/sweep_id"``.
+        sweep_path: "entity/project/sweep_id".
         base_config: config base del sweep (de ahí salen data/model/cv de selección).
         k: cuántos trials del top mirar.
         seeds: seeds para el multi-seed de selección (la 1ª debería ser la del base).
         report_seeds: si se pasa, además del punto+IC (seed base) reentrena el reporte 2019
-            con estas seeds → columnas ``report_2019_mean/sd/min/max``. Es el test decisivo:
+            con estas seeds -> columnas report_2019_mean/sd/min/max. Es el test decisivo:
             separa una mejora real (media alta, sd baja) de un pico de una sola seed (el IC
             bootstrap NO captura la varianza de reentrenar).
-        select_cv: cv de selección; default = el ``cv`` del ``base_config`` (val 2018).
-        report_cv: cv de reporte; default = `derive_report_cv` del de selección (val 2019).
+        select_cv: cv de selección; default = el cv del base_config (val 2018).
+        report_cv: cv de reporte; default = derive_report_cv del de selección (val 2019).
         primary_trait: trait de portada (Pearson que se mide en selección y reporte).
         metric / goal: métrica del sweep para rankear; default se lee del config del sweep.
         n_boot / alpha: bootstrap del IC del reporte. use_cache: caché en disco.
 
     Returns:
-        ``DataFrame`` (una fila por rank, 1 = mejor en val 2018), columnas ordenadas:
+        DataFrame (una fila por rank, 1 = mejor en val 2018), columnas ordenadas:
         identificación, selección, reporte y luego los HP.
     """
     base_cfg = load_config(base_config) if isinstance(base_config, str) else copy.deepcopy(base_config)
@@ -255,7 +236,6 @@ def diagnose_sweep(
         if verbose:
             print(f"  [#{rank}] run {run_id}  (sweep val2018={sweep_val:.4f})")
 
-        # --- Selección 2018: multi-seed (sin bootstrap, rápido) --------------
         sel_vals: list[float] = []
         for s in seeds:
             cfg_s = _apply(base_cfg, overrides, sel_cv)
@@ -266,7 +246,6 @@ def diagnose_sweep(
             sel_vals.append(_select_value(res_s, multitask, primary_trait))
         sel_arr = np.asarray(sel_vals, dtype=float)
 
-        # --- Reporte 2019: reentrena en train+val, con IC -------------------
         cfg_r = _apply(base_cfg, overrides, rep_cv)
         set_seed(int(base_cfg.get("seed", 575)))
         res_r = _cached_eval(cfg_r, multitask=multitask, n_boot=n_boot, alpha=alpha, use_cache=use_cache)
@@ -285,10 +264,6 @@ def diagnose_sweep(
             "report_hi": rep_hi,
         }
 
-        # --- Reporte 2019 multi-seed (opcional): el test decisivo -----------
-        # El IC bootstrap mide remuestreo de líneas para UN modelo entrenado; NO captura
-        # la varianza de reentrenar con otra seed. Reentrenar el trial con varias seeds en
-        # 2019 separa una mejora real (media alta, sd baja) de un pico de una sola seed.
         if report_seeds:
             rep_vals: list[float] = []
             for s in report_seeds:
@@ -341,10 +316,10 @@ def plot_select_vs_report(
 
     Si el ranking de 2018 fuera predictivo, los puntos azules (2019) caerían en el mismo
     orden que los grises (2018). Que NO pase es justo el motivo por el que "el k-ésimo"
-    gana en 2019 por azar. La banda roja (``baseline`` = ``(point, lo, hi)`` de
-    `evaluate_report_point`) deja ver si TODO el top-k le gana al baseline en 2019 — el
+    gana en 2019 por azar. La banda roja (baseline = (point, lo, hi) de
+    evaluate_report_point) deja ver si TODO el top-k le gana al baseline en 2019 — el
     argumento de robustez honesto, en vez de cherry-pickear el que más sube. Devuelve el
-    ``Figure`` (el notebook decide dónde hacer ``savefig``).
+    Figure (el notebook decide dónde hacer savefig).
     """
     import matplotlib.pyplot as plt
 
@@ -407,28 +382,28 @@ def scan_hp(
 ) -> pd.DataFrame:
     """Barrido CONTROLADO de UN hiperparámetro: su efecto en selección (2018) y reporte (2019).
 
-    Fija todos los HP (en ``base_config``, y/o los del trial ``sweep_rank`` de ``sweep_path``,
-    y/o ``overrides``) y varía SOLO ``hp_key`` sobre ``values``. Para cada valor mide el Pearson
+    Fija todos los HP (en base_config, y/o los del trial sweep_rank de sweep_path,
+    y/o overrides) y varía SOLO hp_key sobre values. Para cada valor mide el Pearson
     del trait primario en val de selección (multi-seed) y en el reporte (punto + IC con seed
-    base, y multi-seed si ``report_seeds``). A diferencia de leer trials de un sweep —donde los
-    HP varían juntos y el efecto queda confundido—, esto **aísla** el efecto del HP barrido.
+    base, y multi-seed si report_seeds). A diferencia de leer trials de un sweep —donde los
+    HP varían juntos y el efecto queda confundido—, esto aísla el efecto del HP barrido.
 
     Args:
         base_config: config base (de ahí salen data/model/cv y el resto de los HP).
-        hp_key: clave dot-notation a barrer (p.ej. ``"model.params.loss_weights.AD"``).
+        hp_key: clave dot-notation a barrer (p.ej. "model.params.loss_weights.AD").
         values: valores a probar.
-        sweep_path / sweep_rank: si se pasan, hornea los HP del trial ``sweep_rank`` (1 = mejor)
-            de ese sweep como base (útil para "los HP del mejor modelo"). ``hp_key`` se ignora
-            de esos overrides (lo controla ``values``).
+        sweep_path / sweep_rank: si se pasan, hornea los HP del trial sweep_rank (1 = mejor)
+            de ese sweep como base (útil para "los HP del mejor modelo"). hp_key se ignora
+            de esos overrides (lo controla values).
         overrides: HP extra a fijar (claves dot, pisan a los del sweep).
-        seeds / report_seeds: multi-seed de selección / de reporte (ver `diagnose_sweep`).
+        seeds / report_seeds: multi-seed de selección / de reporte (ver diagnose_sweep).
         select_cv / report_cv: cv de selección (default = el del base) / de reporte (default =
-            `derive_report_cv`). primary_trait, n_boot, alpha, use_cache: como en `diagnose_sweep`.
+            derive_report_cv). primary_trait, n_boot, alpha, use_cache: como en diagnose_sweep.
 
     Returns:
-        ``DataFrame`` con una fila por valor: la columna del HP (nombre = ``hp_key`` sin el
-        prefijo ``model.params.``), ``sel_mean/sd/min/max`` (selección) y ``report_point/lo/hi``
-        (+ ``report_mean/sd/min/max`` si ``report_seeds``).
+        DataFrame con una fila por valor: la columna del HP (nombre = hp_key sin el
+        prefijo model.params.), sel_mean/sd/min/max (selección) y report_point/lo/hi
+        (+ report_mean/sd/min/max si report_seeds).
     """
     base_cfg = load_config(base_config) if isinstance(base_config, str) else copy.deepcopy(base_config)
     multitask = _is_multitask(base_cfg)
@@ -443,7 +418,7 @@ def scan_hp(
         base_ov = dict(top[int(sweep_rank) - 1][0])
     if overrides:
         base_ov.update(overrides)
-    base_ov.pop(hp_key, None)  # el HP barrido lo controla `values`, no el override del trial
+    base_ov.pop(hp_key, None)
 
     if verbose:
         print(f"[scan_hp] {hp_key} sobre {list(values)}  (trait primario={primary_trait})")
@@ -513,12 +488,12 @@ def plot_hp_scan(
     primary_trait: str = "GY",
     title: str | None = None,
 ):
-    """Figura del barrido de un HP: ``hp_name`` (x) vs Pearson en selección (2018) y reporte (2019).
+    """Figura del barrido de un HP: hp_name (x) vs Pearson en selección (2018) y reporte (2019).
 
     Las dos curvas (gris = val 2018, verde/azul = reporte 2019) dejan ver si la tendencia del HP
     aparece en AMBOS años (seleccionable honestamente) o solo en el reporte (efecto del año).
-    Usa ``report_mean ± sd`` si está (multi-seed), si no el punto ± IC95%. ``baseline`` =
-    ``(point, lo, hi)`` de `evaluate_report_point`. Devuelve el ``Figure``.
+    Usa report_mean ± sd si está (multi-seed), si no el punto ± IC95%. baseline =
+    (point, lo, hi) de evaluate_report_point. Devuelve el Figure.
     """
     import matplotlib.pyplot as plt
 
@@ -604,20 +579,20 @@ def compare_trial_vs_baseline(
     use_cache: bool = True,
     verbose: bool = True,
 ) -> dict[str, Any]:
-    """¿El trial ``rank`` del sweep le gana al baseline en el reporte? Delta pareado, cluster por línea.
+    """¿El trial rank del sweep le gana al baseline en el reporte? Delta pareado, cluster por línea.
 
-    Trae las predicciones del trial en el reporte (2019) con la **seed base** y como
-    **ensemble de seeds** (promedio z-scoreado de las predicciones de ``seeds``, alineadas por
+    Trae las predicciones del trial en el reporte (2019) con la seed base y como
+    ensemble de seeds (promedio z-scoreado de las predicciones de seeds, alineadas por
     línea — un modelo legítimo y de menor varianza), y las del baseline; alinea los tres por
-    línea y calcula el **delta pareado** (modelo − baseline) por bootstrap cluster por línea.
+    línea y calcula el delta pareado (modelo − baseline) por bootstrap cluster por línea.
     Es el test correcto para "¿le gana?": compara el MISMO resample, en vez de IC marginales
     sueltos (el ensemble reduce el ruido de seed; el cluster por línea, el de muestreo).
 
     Returns:
-        dict con ``table`` (tidy ``[model, metric, point, lo, hi, n]``), ``deltas``
-        (``{model: {metric: {delta, lo, hi, sig}}}``, ``sig`` = IC95% no cruza 0), ``samples``
-        (bootstrap pareado), ``text`` (resumen formateado), ``fig`` (Pearson ± IC por modelo) y
-        ``n_lines``.
+        dict con table (tidy [model, metric, point, lo, hi, n]), deltas
+        ({model: {metric: {delta, lo, hi, sig}}}, sig = IC95% no cruza 0), samples
+        (bootstrap pareado), text (resumen formateado), fig (Pearson ± IC por modelo) y
+        n_lines.
     """
     from src.eval.ensemble import (align_by_line, average_predictions, bootstrap_table,
                                     paired_diff_summary)
@@ -636,7 +611,6 @@ def compare_trial_vs_baseline(
         print(f"[compare] trial #{rank} de {sweep_path} vs {baseline_label}  "
               f"(reporte val_year={rep_cv.get('val_year')}, seeds={seeds})\n")
 
-    # Predicciones del trial en el reporte, por seed (sin bootstrap: el IC lo hacemos al final).
     preds_by_seed: dict[int, dict[str, Any]] = {}
     for s in seeds:
         cfg_s = _apply(base_cfg, overrides, rep_cv)
@@ -646,19 +620,16 @@ def compare_trial_vs_baseline(
         res_s = _cached_eval(cfg_s, multitask=multitask, n_boot=0, alpha=alpha, use_cache=use_cache)
         preds_by_seed[s] = _scoring_predictions(res_s, multitask, primary_trait)
 
-    # Ensemble = promedio z-scoreado de las seeds (alineadas por línea).
     line_ens, ytrue_ens, yhats_seeds = align_by_line(*[preds_by_seed[s] for s in seeds])
     yhat_ens = average_predictions(yhats_seeds, standardize=True)
     pred_ens = {"line_id": line_ens, "y_true": ytrue_ens, "y_pred": yhat_ens}
 
-    # Baseline en el mismo reporte.
     base_b = load_config(baseline_config) if isinstance(baseline_config, str) else copy.deepcopy(baseline_config)
     base_b["cv"] = copy.deepcopy(rep_cv)
     base_b.setdefault("artifacts", {})["save_model"] = False
     res_b = _cached_eval(base_b, multitask=_is_multitask(base_b), n_boot=0, alpha=alpha, use_cache=use_cache)
     pred_b = _scoring_predictions(res_b, _is_multitask(base_b), primary_trait)
 
-    # Alinear baseline + seed-base + ensemble y armar el bootstrap pareado.
     line_id, y_true, (yh_base, yh_seed, yh_ens) = align_by_line(pred_b, preds_by_seed[base_seed], pred_ens)
     seed_name = f"{model_label} (seed {base_seed})"
     ens_name = f"{model_label} (ensemble {len(seeds)})"
@@ -676,7 +647,7 @@ def compare_trial_vs_baseline(
         fig = plot_ci(df_pr, metrics=("pearson_r",),
                       title=f"Pearson_r {primary_trait} - {model_label} vs {baseline_label} "
                             f"(reporte {rep_cv.get('val_year')})")
-    except Exception as e:  # matplotlib ausente / headless: la tabla y el texto bastan
+    except Exception as e:
         if verbose:
             print(f"  [warn] no pude armar la figura ({e})")
 

@@ -49,23 +49,23 @@ def fixed_temporal_split(
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """Split temporal
 
-    ``train`` = todos los años de dev anteriores a ``val_year``; ``val`` = el
-    año ``val_year``. El ``holdout_test_year`` se excluye de ambos (test final
-    intocable). Si ``val_year`` es ``None`` se usa el año más reciente del dev.
+    train = todos los años de dev anteriores a val_year; val = el
+    año val_year. El holdout_test_year se excluye de ambos (test final
+    intocable). Si val_year es None se usa el año más reciente del dev.
 
-    ``train_years`` (opcional) fija explícitamente los años de train, en vez de
-    "todos los anteriores a ``val_year``". Sirve para experimentos puntuales
-    (p.ej. entrenar solo 2018 → predecir 2020). Se intersecta con los años
-    disponibles y se restringe a años ESTRICTAMENTE anteriores a ``val_year``
+    train_years (opcional) fija explícitamente los años de train, en vez de
+    "todos los anteriores a val_year". Sirve para experimentos puntuales
+    (p.ej. entrenar solo 2018 -> predecir 2020). Se intersecta con los años
+    disponibles y se restringe a años ESTRICTAMENTE anteriores a val_year
     (nunca se mete un año >= val en train; no hay leak temporal hacia el train).
 
-    Aplica `enforce_disjoint_lines` para respetar la regla de líneas disjuntas:
-    con ``enforce='val'`` el set de validación queda solo con líneas NO vistas
+    Aplica enforce_disjoint_lines para respetar la regla de líneas disjuntas:
+    con enforce='val' el set de validación queda solo con líneas NO vistas
     en train.
 
-    Devuelve una lista con un solo fold ``[(train_idx, val_idx)]`` para encajar
-    sin casos especiales en el loop de `run_evaluation`. Devuelve ``[]`` si no
-    hay al menos un año de train anterior a ``val_year``.
+    Devuelve una lista con un solo fold [(train_idx, val_idx)] para encajar
+    sin casos especiales en el loop de run_evaluation. Devuelve [] si no
+    hay al menos un año de train anterior a val_year.
     """
     year = np.asarray(year)
     uniq = sorted(int(y) for y in np.unique(year))
@@ -99,12 +99,12 @@ def expanding_temporal_split(
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """Validación temporal *expanding window* (forward chaining).
 
-    Por cada año en ``val_years`` arma un fold cuyo train son todos los años de
-    dev ESTRICTAMENTE anteriores (excluyendo ``holdout_test_year``): p.ej. con
-    ``val_years=[2018, 2019]`` da [train 2017 -> val 2018, train 2017+2018 -> val
-    2019]. Reusa `fixed_temporal_split` (líneas disjuntas + exclusión del holdout
+    Por cada año en val_years arma un fold cuyo train son todos los años de
+    dev ESTRICTAMENTE anteriores (excluyendo holdout_test_year): p.ej. con
+    val_years=[2018, 2019] da [train 2017 -> val 2018, train 2017+2018 -> val
+    2019]. Reusa fixed_temporal_split (líneas disjuntas + exclusión del holdout
     por fold), así no se reimplementa el split. Los años sin train anterior se
-    saltean (fold vacío). Devuelve la lista concatenada ``[(train_idx, val_idx)]``.
+    saltean (fold vacío). Devuelve la lista concatenada [(train_idx, val_idx)].
     """
     folds: list[tuple[np.ndarray, np.ndarray]] = []
     for vy in val_years:
@@ -123,7 +123,7 @@ def final_test_split(year, test_year: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def assert_no_line_leakage(train_idx, val_idx, line_id) -> None:
-    """lanza `LeakageError` si una línea está en train y val.
+    """lanza LeakageError si una línea está en train y val.
     """
     train_idx, val_idx = _as_int_idx(train_idx), _as_int_idx(val_idx)
     line_id = np.asarray(line_id)

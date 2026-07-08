@@ -1,20 +1,17 @@
-"""Robustez al ruido: degradación de Pearson bajo corrupción de SNPs (flip Bernoulli de bits).
+"""Robustez al ruido: degradación de Pearson bajo corrupción de SNPs.
 
-Experimento dedicado (como `augment.py`): NO reimplementa splits ni métricas —reusa el loader, el
-split temporal por año del config (train_years / val_year) y `pearson_r` de `metrics.py`—; solo
-agrega la perturbación de ``X`` que un `run_evaluation` estándar no hace. Los SNPs son binarios
-``{0,1}``, así que el ruido natural es un **flip Bernoulli**: cada entrada se invierte (0↔1) con
-probabilidad ε. Modela error de genotipado.
+Reusa el loader, el split temporal del config (train_years / val_year) y pearson_r; lo
+único que agrega es la perturbación de X. Los SNPs son binarios, así que el ruido es un
+flip Bernoulli: cada entrada se invierte con probabilidad eps (modela error de
+genotipado). El preproceso del modelo se ajusta siempre train-only.
 
-Dos regímenes (regla 1 intacta: el preprocesamiento del modelo se ajusta SIEMPRE train-only):
-- ``mode="inference"``: se entrena con el train LIMPIO una sola vez y se evalúa sobre ``X_val``
-  corrupto a cada ε (robustez de despliegue). Barato: un solo fit por modelo, muchos predicts.
-- ``mode="train"``: se entrena con ``X_train`` corrupto y se evalúa sobre val LIMPIO (ruido como
-  augmentation/regularización). Un fit por ε.
+En mode="inference" se entrena con el train limpio una vez y se evalúa sobre X_val
+corrupto a cada eps (robustez de despliegue; un fit, muchos predicts). En mode="train"
+se entrena con X_train corrupto y se evalúa sobre val limpio (ruido como
+regularización; un fit por eps).
 
-`noise_curve` devuelve filas tidy ``{model, mode, eps, realization, head, pearson, n}``: para cada ε
-se promedian ``n_realizations`` realizaciones de ruido (semillas distintas) — ε=0 es determinista
-(sin flip) y ancla la curva.
+noise_curve devuelve filas tidy {model, mode, eps, realization, head, pearson, n}; para
+cada eps promedia n_realizations realizaciones. eps=0 es determinista y ancla la curva.
 """
 from __future__ import annotations
 
@@ -30,10 +27,10 @@ from src.utils.seed import set_seed
 
 
 def flip_snps(X: np.ndarray, eps: float, rng: np.random.Generator) -> np.ndarray:
-    """Flip Bernoulli de bits sobre una matriz de SNPs binarios ``{0,1}``.
+    """Flip Bernoulli de bits sobre una matriz de SNPs binarios {0,1}.
 
-    Cada entrada se invierte (``x -> 1-x``) con probabilidad ``eps``. ``eps<=0`` devuelve ``X`` intacto
-    (copia). No asume que ``X`` sea entera: opera sobre ``{0.0, 1.0}``.
+    Cada entrada se invierte (x -> 1-x) con probabilidad eps. eps<=0 devuelve X intacto
+    (copia). No asume que X sea entera: opera sobre {0.0, 1.0}.
     """
     if eps <= 0:
         return np.asarray(X)
@@ -44,8 +41,8 @@ def flip_snps(X: np.ndarray, eps: float, rng: np.random.Generator) -> np.ndarray
 
 
 def _build_arrays(cfg: dict[str, Any], ds: Any) -> tuple[Any, list[str], bool]:
-    """Devuelve ``(arrays, heads, multitask)`` según el modo del config (multi_trait_env / multienv /
-    single-task). ``heads`` son los nombres de cabeza (``GY_optimal``, ...)."""
+    """Devuelve (arrays, heads, multitask) según el modo del config (multi_trait_env / multienv /
+    single-task). heads son los nombres de cabeza (GY_optimal, ...)."""
     d = cfg["data"]
     if d.get("multi_trait_env"):
         traits = list(d.get("targets") or ["GY", "PH", "AD"])
@@ -63,7 +60,7 @@ def _build_arrays(cfg: dict[str, Any], ds: Any) -> tuple[Any, list[str], bool]:
 
 def _fit(model: Any, X_tr: np.ndarray, arrays: Any, tr: np.ndarray,
          heads: list[str], multitask: bool) -> None:
-    """Fittea el modelo (fresco) sobre el train ``tr`` con ``X_tr`` (limpio o corrupto)."""
+    """Fittea el modelo (fresco) sobre el train tr con X_tr (limpio o corrupto)."""
     year_tr = np.asarray(arrays.year)[tr]
     line_tr = np.asarray(arrays.line_id)[tr]
     if multitask:
@@ -76,7 +73,7 @@ def _fit(model: Any, X_tr: np.ndarray, arrays: Any, tr: np.ndarray,
 
 def _predict_heads(model: Any, X_va: np.ndarray, heads: list[str], multitask: bool,
                    want: Sequence[str]) -> dict[str, np.ndarray]:
-    """Predice y devuelve ``{head: y_pred}`` para las cabezas pedidas que el modelo expone."""
+    """Predice y devuelve {head: y_pred} para las cabezas pedidas que el modelo expone."""
     if multitask:
         Yhat = np.asarray(model.predict(X_va), dtype=float)
         return {h: Yhat[:, heads.index(h)] for h in want if h in heads}
@@ -109,10 +106,10 @@ def noise_curve(
 ) -> list[dict[str, Any]]:
     """Curva de degradación de Pearson vs ε para UN modelo (config), en el fold honesto val.
 
-    - ``mode="inference"``: un fit limpio + predicts sobre val corrupto a cada ε (barato).
-    - ``mode="train"``: un fit por (ε, realización) sobre train corrupto, predict limpio (caro).
+    - mode="inference": un fit limpio + predicts sobre val corrupto a cada ε (barato).
+    - mode="train": un fit por (ε, realización) sobre train corrupto, predict limpio (caro).
 
-    Devuelve filas ``{model, mode, eps, realization, head, pearson, n}`` (una por ε×realización×cabeza).
+    Devuelve filas {model, mode, eps, realization, head, pearson, n} (una por ε×realización×cabeza).
     Para ε=0 hay una sola realización (sin ruido, determinista).
     """
     set_seed(seed)
@@ -138,8 +135,7 @@ def noise_curve(
 
     if mode == "inference":
         model = build_model(cfg)
-        _fit(model, X[tr], arrays, tr, all_heads, multitask)   # fit LIMPIO una vez
-        # ε=0 determinista
+        _fit(model, X[tr], arrays, tr, all_heads, multitask)
         _emit(0.0, 0, _predict_heads(model, X[va], all_heads, multitask, want))
         for eps in [e for e in epsilons if e > 0]:
             for r in range(n_realizations):
@@ -147,7 +143,6 @@ def noise_curve(
                 Xva_n = flip_snps(X[va], eps, rng)
                 _emit(eps, r, _predict_heads(model, Xva_n, all_heads, multitask, want))
     elif mode == "train":
-        # ε=0: fit limpio, predict limpio (misma ancla)
         model = build_model(cfg)
         _fit(model, X[tr], arrays, tr, all_heads, multitask)
         _emit(0.0, 0, _predict_heads(model, X[va], all_heads, multitask, want))
@@ -155,9 +150,9 @@ def noise_curve(
             for r in range(n_realizations):
                 rng = np.random.default_rng(rng_master.integers(1 << 32))
                 Xtr_n = flip_snps(X[tr], eps, rng)
-                m = build_model(cfg)                            # modelo FRESCO por ε×realización
+                m = build_model(cfg)
                 _fit(m, Xtr_n, arrays, tr, all_heads, multitask)
-                _emit(eps, r, _predict_heads(m, X[va], all_heads, multitask, want))  # val LIMPIO
+                _emit(eps, r, _predict_heads(m, X[va], all_heads, multitask, want))
     else:
         raise ValueError(f"mode debe ser 'inference' o 'train', no {mode!r}")
 

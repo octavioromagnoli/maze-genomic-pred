@@ -1,19 +1,11 @@
-"""Ensembles de predicciones para el reporte: blend MLP+GBLUP (A3) y promedio de redes (A4).
+"""Ensembles de predicciones para el reporte: blend MLP+GBLUP y promedio de redes.
 
-Trabaja sobre las predicciones por fold que devuelve `run_evaluation`
-(``result["predictions"]``): cada entrada trae ``line_id`` + ``y_true`` + ``y_pred`` del
-val de un fold. Estas utilidades:
-
-- **alinean por línea** las predicciones de modelos distintos (mismo split temporal ⇒ en la
-  práctica las mismas filas, pero se alinea por `line_id` por las dudas);
-- **eligen el peso del blend** ``alpha`` en un inner-val ANTERIOR (regla 3: nunca en el set
-  de reporte, evita winner's curse);
-- arman el **IC bootstrap pareado** de (modelo − referencia) reusando
-  `src.eval.metrics.bootstrap_ci` con la misma seed/grupo, así el ruido compartido del val
-  se cancela (mismo criterio que la celda pareada del notebook).
-
-La lógica vive acá (no en el notebook) para respetar la convención del proyecto
-(notebooks solo importan y llaman funciones de `src/`) y para poder testearla.
+Trabaja sobre las predicciones por fold de run_evaluation (result["predictions"]):
+cada entrada trae line_id + y_true + y_pred del val de un fold. Alinea por línea las
+predicciones de modelos distintos, elige el peso alpha del blend en un inner-val
+anterior (nunca en el set de reporte) y arma el IC bootstrap pareado de
+(modelo - referencia) con bootstrap_ci, con la misma seed/grupo para que el ruido
+compartido del val se cancele. Vive acá y no en el notebook para poder testearlo.
 """
 from __future__ import annotations
 
@@ -27,10 +19,10 @@ from src.eval.metrics import bootstrap_ci, coincidence_index, pearson_r
 def fold_predictions(
     result: dict[str, Any], *, role: str | None = None, val_year: int | None = None
 ) -> dict[str, Any]:
-    """Devuelve la entrada de ``result['predictions']`` que matchea (por defecto la última).
+    """Devuelve la entrada de result['predictions'] que matchea (por defecto la última).
 
-    Con split fijo hay un solo fold de val ⇒ ``[-1]`` alcanza. ``role`` ("scoring"/"report")
-    y ``val_year`` filtran cuando hay varios folds (expanding window).
+    Con split fijo hay un solo fold de val => [-1] alcanza. role ("scoring"/"report")
+    y val_year filtran cuando hay varios folds (expanding window).
     """
     preds = result.get("predictions") or []
     if not preds:
@@ -50,11 +42,11 @@ def fold_predictions(
 
 
 def align_by_line(*preds: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
-    """Alinea N dicts de predicción por ``line_id`` común.
+    """Alinea N dicts de predicción por line_id común.
 
-    Devuelve ``(line_id, y_true, [y_pred_0, y_pred_1, ...])`` ordenados igual en todos. Toma
-    la intersección de líneas (mismo split ⇒ normalmente idénticas) y verifica que el
-    ``y_true`` observado coincida entre modelos (misma línea/año/ambiente ⇒ mismo fenotipo).
+    Devuelve (line_id, y_true, [y_pred_0, y_pred_1, ...]) ordenados igual en todos. Toma
+    la intersección de líneas (mismo split => normalmente idénticas) y verifica que el
+    y_true observado coincida entre modelos (misma línea/año/ambiente => mismo fenotipo).
     """
     if not preds:
         raise ValueError("align_by_line necesita al menos una predicción.")
@@ -85,7 +77,7 @@ def align_by_line(*preds: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, list[
 
 
 def blend(yhat_a, yhat_b, alpha: float) -> np.ndarray:
-    """Combinación convexa ``alpha·a + (1-alpha)·b`` (a = primer modelo, p.ej. el MLP)."""
+    """Combinación convexa alpha*a + (1-alpha)*b (a = primer modelo, p.ej. el MLP)."""
     a = float(alpha)
     return a * np.asarray(yhat_a, dtype=float) + (1.0 - a) * np.asarray(yhat_b, dtype=float)
 
@@ -99,11 +91,11 @@ def select_blend_alpha(
     grid: np.ndarray | None = None,
     frac: float = 0.2,
 ) -> tuple[float, list[tuple[float, float]]]:
-    """Elige ``alpha`` en el INNER-val maximizando la métrica del blend (regla 3).
+    """Elige alpha en el inner-val maximizando la métrica del blend.
 
-    ``metric``: ``"pearson"`` (default, portada) o ``"matching20"`` (coincidence index al
-    top-``frac``). Devuelve ``(alpha, scores)`` con ``scores = [(alpha, valor), ...]`` para
-    graficar la curva. El ``alpha`` elegido se aplica DESPUÉS al set de reporte, que esta
+    metric: "pearson" (default, portada) o "matching20" (coincidence index al
+    top-frac). Devuelve (alpha, scores) con scores = [(alpha, valor), ...] para
+    graficar la curva. El alpha elegido se aplica DESPUÉS al set de reporte, que esta
     función NO toca.
     """
     grid_arr = np.linspace(0.0, 1.0, 101) if grid is None else np.asarray(grid, dtype=float)
@@ -136,10 +128,10 @@ def _zapply(yhat, params: tuple[float, float]) -> np.ndarray:
 def average_predictions(yhats: list, *, standardize: bool = False) -> np.ndarray:
     """Promedio de una lista de vectores YA alineados (A4: ensemble de redes).
 
-    Con ``standardize=True`` z-scorea cada predictor por su propia media/desvío ANTES de
+    Con standardize=True z-scorea cada predictor por su propia media/desvío ANTES de
     promediar: necesario si los modelos tienen escalas dispares (p.ej. MLP con
-    ``loss=pearson``), porque si no el de mayor varianza domina el promedio y el "ensemble"
-    colapsa a ese modelo. No usa el target ⇒ no introduce leakage.
+    loss=pearson), porque si no el de mayor varianza domina el promedio y el "ensemble"
+    colapsa a ese modelo. No usa el target => no introduce leakage.
     """
     if not yhats:
         raise ValueError("average_predictions recibió una lista vacía.")
@@ -162,9 +154,9 @@ def paired_bootstrap_diff(
 ) -> dict[str, dict[str, Any]]:
     """IC bootstrap PAREADO de (modelo − referencia) por métrica.
 
-    Corre `bootstrap_ci` para los dos modelos con la MISMA ``seed`` y ``group`` (cluster por
-    línea) ⇒ ``samples_modelo[b] − samples_ref[b]`` es un bootstrap pareado válido (el ruido
-    de qué líneas caen en val se cancela). Devuelve ``{name: {"point","lo","hi","samples"}}``
+    Corre bootstrap_ci para los dos modelos con la MISMA seed y group (cluster por
+    línea) => samples_modelo[b] − samples_ref[b] es un bootstrap pareado válido (el ruido
+    de qué líneas caen en val se cancela). Devuelve {name: {"point","lo","hi","samples"}}
     de la diferencia; si el IC no cruza 0, la diferencia es significativa (signo: + favorece
     al modelo en pearson_r/r2/matching20, lo contrario en rmse).
     """
@@ -198,22 +190,22 @@ def bootstrap_table(
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, np.ndarray]]]:
     """IC bootstrap de varias predicciones YA alineadas, en el formato de los gráficos.
 
-    ``preds_by_name = {nombre: y_pred}`` (todas alineadas al mismo ``y_true``/``group``).
-    Corre `bootstrap_ci` por modelo con la MISMA ``seed`` y ``group`` ⇒ las diferencias
-    ``muestras_x − muestras_ref`` quedan pareadas (mismo resample). Devuelve:
+    preds_by_name = {nombre: y_pred} (todas alineadas al mismo y_true/group).
+    Corre bootstrap_ci por modelo con la MISMA seed y group => las diferencias
+    muestras_x − muestras_ref quedan pareadas (mismo resample). Devuelve:
 
-    - ``rows``: lista tidy ``[{model, metric, point, lo, hi, n}]`` (igual que ``evaluate_model``)
-      ⇒ se arma un DataFrame y se pasa a :func:`src.eval.report_plots.plot_ci` / tablas.
-    - ``samples_by_model``: ``{nombre: {metrica: muestras}}`` ⇒ :func:`plot_box` /
-      :func:`plot_paired_diff`.
+    - rows: lista tidy [{model, metric, point, lo, hi, n}] (igual que evaluate_model)
+      => se arma un DataFrame y se pasa a :func:src.eval.report_plots.plot_ci / tablas.
+    - samples_by_model: {nombre: {metrica: muestras}} => :func:plot_box /
+      :func:plot_paired_diff.
 
-    Con ``standardize=True`` z-scorea cada predictor por su propia media/desvío antes de las
+    Con standardize=True z-scorea cada predictor por su propia media/desvío antes de las
     métricas: pone a todos en escala comparable (útil cuando hay modelos de escala arbitraria,
-    p.ej. MLP con ``loss=pearson``). Pearson y matching20 son invariantes; RMSE/R² pasan a
-    escala estandarizada (no en unidades del target ⇒ solo orientativos). No usa el target.
+    p.ej. MLP con loss=pearson). Pearson y matching20 son invariantes; RMSE/R² pasan a
+    escala estandarizada (no en unidades del target => solo orientativos). No usa el target.
 
     Útil para los ensembles del notebook (A3/A4), donde el "modelo" es un vector de
-    predicciones combinado (blend, promedio) que no pasa por `run_evaluation`.
+    predicciones combinado (blend, promedio) que no pasa por run_evaluation.
     """
     n = int(np.size(np.asarray(y_true))) if n is None else int(n)
     rows: list[dict[str, Any]] = []
@@ -241,11 +233,11 @@ def paired_diff_summary(
     *,
     alpha: float = 0.05,
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    """Resumen de ``(modelo − ref)`` por métrica desde las muestras pareadas (texto/significancia).
+    """Resumen de (modelo − ref) por métrica desde las muestras pareadas (texto/significancia).
 
     Mismo criterio que las celdas pareadas del notebook: IC95% de la resta sobre el mismo
     resample; si no cruza 0, la diferencia es significativa. Devuelve
-    ``{modelo: {metrica: {"delta", "lo", "hi", "sig"}}}`` (excluye la referencia).
+    {modelo: {metrica: {"delta", "lo", "hi", "sig"}}} (excluye la referencia).
     """
     lo_q, hi_q = 100 * alpha / 2, 100 * (1 - alpha / 2)
     out: dict[str, dict[str, dict[str, Any]]] = {}

@@ -1,29 +1,15 @@
-"""XGBoost — gradient boosting de árboles para regresión genómica.
+"""XGBoost (gradient boosting de árboles) para regresión genómica.
 
-Wrapper fino sobre `xgboost.XGBRegressor` que respeta la interfaz común
-(`fit`/`predict`) y se enchufa en `run_evaluation` como cualquier otro modelo.
+Wrapper fino sobre xgboost.XGBRegressor con la interfaz común fit/predict. No hace
+preprocesamiento propio: si el YAML trae un bloque preprocess:, build_model lo
+envuelve en PreprocessedModel (scaler/máscara MAF ajustados con el train), y acá fit
+recibe el train ya transformado.
 
-Decisiones de diseño alineadas con las reglas del proyecto:
-
-- **Sin leakage (regla 1).** No hace preprocesamiento propio: si el YAML trae un
-  bloque `preprocess:`, `build_model` lo envuelve en `PreprocessedModel`, que
-  ajusta el scaler/máscara MAF solo con el train del fold. Acá `fit` recibe el
-  train ya transformado.
-- **Early stopping temporal opcional (regla 3).** Con
-  `params.early_stopping_rounds`, se reserva el ÚLTIMO año del train como
-  inner-val (p.ej. 2017→2018) solo para elegir cuántos árboles usar. Luego, por
-  default, se reentrena un modelo final desde cero con TODO el train del fold
-  (p.ej. 2017+2018) y `n_estimators=best_iteration+1`. El val/test externo no se
-  toca. Si hay un solo año en train, se usa `n_estimators` fijo.
-- **Reproducibilidad.** `random_state` se fija desde el config (default 575) para
-  controlar el RNG interno de XGBoost, que la seed global de numpy/torch no
-  alcanza.
-
-`get_fitted_params` expone `best_iteration`/`best_score` y los HP efectivos para
-que `run_evaluation`/`train.py` los logeen a wandb sin bajar el modelo.
-
-Persistencia: `XGBRegressor` es picklable, así que el `save`/`load` por joblib
-de `BaseModel` sirve sin override.
+Con params.early_stopping_rounds reserva el último año del train como inner-val para
+elegir el número de árboles y después reentrena el modelo final con todo el train del
+fold y n_estimators=best_iteration+1. Con un solo año usa n_estimators fijo.
+random_state se fija desde el config para el RNG interno de XGBoost. XGBRegressor es
+picklable, así que sirve el save/load por joblib de BaseModel.
 """
 from __future__ import annotations
 
@@ -34,9 +20,6 @@ import numpy as np
 
 from src.models.base import BaseModel
 
-# Hiperparámetros por defecto: un punto de partida razonable para p >> n
-# (árboles poco profundos, learning rate chico, submuestreo de filas/columnas
-# como regularización). Se overridean por `model.params` en el YAML.
 _DEFAULTS: dict[str, Any] = {
     "n_estimators": 500,
     "max_depth": 4,
@@ -49,15 +32,14 @@ _DEFAULTS: dict[str, Any] = {
     "gamma": 0.0,
 }
 
-# Claves de `params` que NO son hiperparámetros de XGBoost (control del wrapper).
 _WRAPPER_KEYS = {"early_stopping_rounds", "eval_scheme", "random_state", "refit_full_train"}
 
 
 def temporal_inner_split(years: np.ndarray | None) -> tuple[np.ndarray, np.ndarray] | None:
     """Inner-split temporal dentro del train: años previos vs. último año.
 
-    Devuelve ``(idx_inner_train, idx_inner_val)`` con el último año como inner-val,
-    o ``None`` si no hay al menos 2 años distintos (no se puede partir por año).
+    Devuelve (idx_inner_train, idx_inner_val) con el último año como inner-val, o None
+    si no hay al menos 2 años distintos.
     """
     if years is None:
         return None
@@ -72,14 +54,14 @@ def temporal_inner_split(years: np.ndarray | None) -> tuple[np.ndarray, np.ndarr
 class XGBoostRegressor(BaseModel):
     """Gradient boosting (XGBoost) para regresión de un fenotipo.
 
-    `params` (sub-dict `model.params` del config) — además de los HP de
-    `xgboost.XGBRegressor` (n_estimators, max_depth, learning_rate, subsample,
+    params (sub-dict model.params del config) — además de los HP de
+    xgboost.XGBRegressor (n_estimators, max_depth, learning_rate, subsample,
     colsample_bytree, reg_lambda, reg_alpha, min_child_weight, gamma, ...):
         early_stopping_rounds : int opcional. Si está, activa early stopping con
             un inner-val temporal (último año del train) para elegir el número de
             árboles. Default: sin early stopping.
         eval_scheme           : "temporal" (default) — único esquema soportado para
-            el early stopping, coherente con la regla 3.
+            el early stopping.
         refit_full_train      : bool (default True). Si hay early stopping temporal,
             reentrena el modelo final con todo el train externo y el número de
             árboles seleccionado.
@@ -97,12 +79,9 @@ class XGBoostRegressor(BaseModel):
         return y
 
     def _effective_hp(self) -> dict[str, Any]:
-        # HP del booster: defaults + override del YAML (sin las claves del wrapper).
         hp = {**_DEFAULTS}
         hp.update({k: v for k, v in self.params.items() if k not in _WRAPPER_KEYS})
         hp["random_state"] = int(self.params.get("random_state", 575))
-        # En el entorno local, XGBoost 3.2.0 puede segfaultear con n_jobs=-1
-        # sobre esta matriz SNP grande. Default conservador; el YAML puede overridear.
         hp.setdefault("n_jobs", 1)
         hp["objective"] = "reg:squarederror"
         hp["n_estimators"] = int(hp["n_estimators"])
@@ -159,7 +138,6 @@ class XGBoostRegressor(BaseModel):
         self.n_features_in_: int = X.shape[1]
 
     def _fit_without_selection(self, X: np.ndarray, y: np.ndarray, *, hp: dict[str, Any]) -> None:
-        # Sin early stopping: n_estimators fijo sobre todo el train del fold.
         self.early_stopping_used_ = False
         self.best_iteration_ = None
         self.best_score_ = float("nan")
@@ -186,8 +164,6 @@ class XGBoostRegressor(BaseModel):
         )
         self.refit_full_train_ = refit_full_train
         if refit_full_train:
-            # Modelo final: todo el train externo, con el número de árboles elegido
-            # por el split temporal interno.
             self._fit_final(X, y, hp=hp, n_estimators=selected)
         else:
             self.model_ = selector
@@ -195,11 +171,10 @@ class XGBoostRegressor(BaseModel):
         return self
 
     def fit_with_preprocessor(self, pre: Any, X: np.ndarray, y: np.ndarray) -> "XGBoostRegressor":
-        """Ajusta XGBoost cuando vive dentro de `PreprocessedModel`.
+        """Ajusta XGBoost cuando vive dentro de PreprocessedModel.
 
-        Para la selección interna, el preprocesador se ajusta solo con el
-        inner-train. Para el modelo final refitteado, el preprocesador persistido
-        en el wrapper se ajusta con todo el train externo.
+        Para la selección interna el preprocesador se ajusta con el inner-train; para el
+        modelo final refitteado, con todo el train externo.
         """
         X_raw = np.asarray(X)
         y = self._validate_y(y)

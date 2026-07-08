@@ -1,6 +1,6 @@
 """
 Métricas de regresión, centralizadas.
-Las métricas individuales (pearson_r, rmse, r2) devuelven `nan` si no se pueden calcular
+Las métricas individuales (pearson_r, rmse, r2) devuelven nan si no se pueden calcular
 """
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ def _clean_pair(y_true, y_pred) -> tuple[np.ndarray, np.ndarray]:
 
 
 def pearson_r(y_true, y_pred) -> float:
-    """Correlación de Pearson. `nan` si n<2 o alguna serie tiene varianza ~0."""
+    """Correlación de Pearson. nan si n<2 o alguna serie tiene varianza ~0."""
     yt, yp = _clean_pair(y_true, y_pred)
     if yt.size < 2:
         return float("nan")
-    st, sp = yt.std(), yp.std()  # ddof=0, consistente
+    st, sp = yt.std(), yp.std()
     if st < _EPS or sp < _EPS:
         return float("nan")
     return float(np.mean((yt - yt.mean()) * (yp - yp.mean())) / (st * sp))
@@ -38,7 +38,7 @@ def rmse(y_true, y_pred) -> float:
 
 
 def r2(y_true, y_pred) -> float:
-    """Coeficiente de determinación. `nan` si la varianza de y_true es ~0."""
+    """Coeficiente de determinación. nan si la varianza de y_true es ~0."""
     yt, yp = _clean_pair(y_true, y_pred)
     if yt.size < 2:
         return float("nan")
@@ -50,40 +50,40 @@ def r2(y_true, y_pred) -> float:
 
 
 def coincidence_index(y_true, y_pred, frac: float = 0.2, *, higher_is_better: bool = True) -> float:
-    """Coincidence index (*matching*) para selección: aciertos en el top-``frac``.
+    """Coincidence index (*matching*) para selección: aciertos en el top-frac.
 
-    Mide la utilidad del modelo para **seleccionar líneas**, no para predecir el valor
-    exacto: de las líneas que realmente caen en el mejor ``frac`` por fenotipo
-    **observado**, ¿qué proporción el modelo también pone en su mejor ``frac`` por valor
-    **predicho**? Es la métrica de selección truncada estándar en mejoramiento genómico.
+    Mide la utilidad del modelo para seleccionar líneas, no para predecir el valor
+    exacto: de las líneas que realmente caen en el mejor frac por fenotipo
+    observado, ¿qué proporción el modelo también pone en su mejor frac por valor
+    predicho? Es la métrica de selección truncada estándar en mejoramiento genómico.
 
-    Ojo: se evalúa sobre **líneas/genotipos** (las observaciones del fold), no sobre
-    "genes" ni marcadores. ``frac=0.2`` ⇒ matching20 (top-20%).
+    Ojo: se evalúa sobre líneas/genotipos (las observaciones del fold), no sobre
+    "genes" ni marcadores. frac=0.2 => matching20 (top-20%).
 
     Args:
         frac: fracción de corte en (0, 1]. 0.2 = top-20%.
-        higher_is_better: ``True`` (p.ej. GY: más rinde = mejor) toma los valores más
-            altos; ``False`` (p.ej. días a floración más cortos) invierte el orden.
+        higher_is_better: True (p.ej. GY: más rinde = mejor) toma los valores más
+            altos; False (p.ej. días a floración más cortos) invierte el orden.
 
     Returns:
-        Proporción de aciertos en ``[0, 1]`` = ``|top_obs ∩ top_pred| / k`` con
-        ``k = round(frac·n)``. **Referencia**: una selección al azar acierta ~``frac``
-        (0.2 para el top-20%); 1.0 = recupera exactamente el top observado. ``nan`` si
-        ``n < 2`` o si alguna serie es ~constante (sin ranking posible, igual que
-        `pearson_r`). El conteo "a cuántos les pegó" se recupera como ``round(ci·k)``.
+        Proporción de aciertos en [0, 1] = |top_obs ∩ top_pred| / k con
+        k = round(frac*n). Referencia: una selección al azar acierta ~frac
+        (0.2 para el top-20%); 1.0 = recupera exactamente el top observado. nan si
+        n < 2 o si alguna serie es ~constante (sin ranking posible, igual que
+        pearson_r). El conteo "a cuántos les pegó" se recupera como round(ci*k).
     """
     yt, yp = _clean_pair(y_true, y_pred)
     n = yt.size
     if n < 2:
         return float("nan")
-    if yt.std() < _EPS or yp.std() < _EPS:   # predicción/target constante => top ambiguo
+    if yt.std() < _EPS or yp.std() < _EPS:
         return float("nan")
     k = max(1, int(round(frac * n)))
-    if k >= n:                       # frac ~1: el top es todo => coincidencia trivial
+    if k >= n:
         return 1.0
     if not higher_is_better:
         yt, yp = -yt, -yp
-    top_true = np.argpartition(yt, -k)[-k:]   # índices de los k mayores (sin ordenar)
+    top_true = np.argpartition(yt, -k)[-k:]
     top_pred = np.argpartition(yp, -k)[-k:]
     return float(np.intersect1d(top_true, top_pred).size / k)
 
@@ -100,10 +100,10 @@ def regression_metrics(y_true, y_pred) -> dict[str, float]:
 
 
 def summarize_folds(per_fold: list[dict[str, float]]) -> dict[str, float]:
-    """Agrega métricas por fold en mean/std (ignorando `nan`).
+    """Agrega métricas por fold en mean/std (ignorando nan).
 
-    Para cada métrica ``m`` agrega ``m_mean`` y ``m_std``. Útil para el resumen
-    de CV que se loguea a ``wandb.summary``.
+    Para cada métrica m agrega m_mean y m_std. Útil para el resumen
+    de CV que se loguea a wandb.summary.
     """
     if not per_fold:
         return {}
@@ -130,14 +130,14 @@ def bootstrap_ci(
     """IC percentil por bootstrap para varias métricas a la vez.
 
     Args:
-        metrics: dict ``{nombre: fn(y_true, y_pred) -> float}``.
+        metrics: dict {nombre: fn(y_true, y_pred) -> float}.
         group: etiqueta de grupo por observación para el cluster bootstrap;
-            ``None`` = bootstrap de filas independientes.
+            None = bootstrap de filas independientes.
         n_boot: cantidad de réplicas.
-        alpha: nivel; el IC es ``[alpha/2, 1-alpha/2]`` (0.05 => IC 95%).
+        alpha: nivel; el IC es [alpha/2, 1-alpha/2] (0.05 => IC 95%).
         seed: semilla del RNG (reproducible).
 
-    Devuelve ``{nombre: {"lo": float, "hi": float, "samples": np.ndarray}}``.
+    Devuelve {nombre: {"lo": float, "hi": float, "samples": np.ndarray}}.
     """
     yt = np.asarray(y_true, dtype=float).ravel()
     yp = np.asarray(y_pred, dtype=float).ravel()
@@ -167,6 +167,6 @@ def bootstrap_ci(
         if np.isfinite(s).any():
             lo, hi = np.nanpercentile(s, [lo_q, hi_q])
         else:
-            lo = hi = float("nan")  # métrica degenerada (p. ej. predicción constante)
+            lo = hi = float("nan")
         out[name] = {"lo": float(lo), "hi": float(hi), "samples": s}
     return out
