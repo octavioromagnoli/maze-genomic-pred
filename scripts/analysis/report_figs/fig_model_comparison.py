@@ -1,4 +1,4 @@
-"""FIGURA: comparativa de los 7 modelos del informe en GY_drought y GY_optimal (val 2019).
+"""FIGURA: comparativa de los 6 modelos del informe en GY_drought y GY_optimal (val 2019).
 
 Portada = Pearson (regla 5), con IC95% por bootstrap cluster-linea (ya calculado por el harness).
 Reusa el camino cacheado del proyecto (make_evaluators / make_multitask_evaluator, nb_eval) => no
@@ -30,7 +30,6 @@ MULTITASK = {   # label -> config (todos exponen cabezas GY_optimal / GY_drought
     "Ensemble":    "configs/exp_ensemble_6head_GY_2017_2018_to_2019.yaml",
     "MoE GxE":     "configs/exp_moe_gxe_6head_2017_2018_to_2019.yaml",
     "MoE PLS":     "configs/exp_moe_pls_6head_2017_2018_to_2019.yaml",
-    "Contrastivo": "configs/exp_moe_contrastive_6head_2017_2018_to_2019.yaml",
 }
 GBLUP = {"drought": "configs/exp_gblup_2017_2018_to_2019_drought.yaml",
          "optimal": "configs/exp_gblup_2017_2018_to_2019.yaml"}
@@ -75,7 +74,7 @@ for env in ("drought", "optimal"):
 # --- Plot: dos paneles (drought | optimal), punto +- IC95%, ordenado por drought ---
 order = df[df.env == "drought"].sort_values("point").set_index("model").index.tolist()
 COL = {"GBLUP": "#888888", "MoE hard": "#2a9d8f", "MoE soft": "#8ab17d",
-       "Ensemble": "#457b9d", "MoE GxE": "#e9c46a", "MoE PLS": "#e76f51", "Contrastivo": "#9d4edd"}
+       "Ensemble": "#457b9d", "MoE GxE": "#e9c46a", "MoE PLS": "#e76f51"}
 
 fig, axes = plt.subplots(1, 2, figsize=(11, 4.4), sharey=True)
 for ax, env, title in zip(axes, ("drought", "optimal"), ("GY sequía (portada)", "GY óptimo")):

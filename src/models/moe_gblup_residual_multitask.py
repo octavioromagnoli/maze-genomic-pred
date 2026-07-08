@@ -4,8 +4,7 @@ Es el `moe_multitask` (el MoE hard que gana en drought 2019) con UN solo cambio:
 el fenotipo crudo, cada experto predice el residuo ``R = y − û`` del GBLUP y la predicción final es
 ``û + salida_experto``. El ruteo (PCA de SNPs + GMM, hard top-1) queda IDÉNTICO al hard MoE, así que
 esto aísla el efecto de "impulsar la red multitask con el GBLUP como backbone" sobre la arquitectura
-que ya funciona. (La otra variante, `moe_gblup_multitask`, cambió los tres ejes a la vez —ruteo en û,
-residuo, ruteo soft— y lavó la señal; acá se cambia solo el target.)
+que ya funciona (acá se cambia solo el target, no el ruteo).
 
 Pipeline (todo train-only por fold, regla 1):
 1. **GBLUP backbone.** Un GBLUP por trait/ambiente ajustado SOLO con el train ⇒ ``û`` ``(n, T)`` y el

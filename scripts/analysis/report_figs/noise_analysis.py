@@ -21,7 +21,7 @@ os.makedirs(OUTDIR, exist_ok=True)
 EPS = (0.0, 0.01, 0.02, 0.05, 0.10, 0.20)
 R = 5
 COL = {"GBLUP": "#8a8a8a", "MoE hard": "#1f8a7c", "MoE soft": "#8ab17d", "Ensemble": "#3f6f8f",
-       "MoE GxE": "#c9a227", "MoE PLS": "#d9563a", "Contrastivo": "#9d4edd"}
+       "MoE GxE": "#c9a227", "MoE PLS": "#d9563a"}
 
 MT = {  # multitask: exponen GY_optimal y GY_drought
     "MoE hard":    "configs/exp_moe_hard_6head_2017_2018_to_2019.yaml",
@@ -29,7 +29,6 @@ MT = {  # multitask: exponen GY_optimal y GY_drought
     "Ensemble":    "configs/exp_ensemble_6head_GY_2017_2018_to_2019.yaml",
     "MoE GxE":     "configs/exp_moe_gxe_6head_2017_2018_to_2019.yaml",
     "MoE PLS":     "configs/exp_moe_pls_6head_2017_2018_to_2019.yaml",
-    "Contrastivo": "configs/exp_moe_contrastive_6head_2017_2018_to_2019.yaml",
 }
 GBLUP_DRO = "configs/exp_gblup_2017_2018_to_2019_drought.yaml"
 GBLUP_OPT = "configs/exp_gblup_2017_2018_to_2019.yaml"

@@ -92,8 +92,8 @@ class MixtureOfExpertsMultitaskRegressor(BaseModel):
         """Ajusta la featurización del gating (train-only) y devuelve las features ``Z`` para el GMM.
 
         Default no supervisado (PCA): ignora ``Y``/``Y_mask``. Las variantes supervisadas
-        (`moe_pls_multitask`, `moe_contrastive_multitask`) lo overridean para orientar el espacio de
-        ruteo por el fenotipo o por el parentesco. Guarda la cadena ajustada en ``self.pre_``.
+        (`moe_pls_multitask`) lo overridean para orientar el espacio de
+        ruteo por el fenotipo. Guarda la cadena ajustada en ``self.pre_``.
         """
         self.pre_ = self._build_gating()
         return self.pre_.fit_transform(X)

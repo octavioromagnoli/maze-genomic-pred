@@ -12,25 +12,18 @@ import numpy as np
 from src.data.preprocess import build_preprocessor
 from src.models.base import BaseModel
 from src.models.cbeta_vae import CBetaVAERegressor
-from src.models.deep_kernel_attn import DeepKernelAttentionRegressor
 from src.models.dummy import MeanPredictor
 from src.models.ensemble_multitask import EnsembleMultitaskRegressor
 from src.models.gblup import GBLUP
 from src.models.gblup_residual import GBLUPResidualRegressor
 from src.models.mlp import MLPRegressor
 from src.models.mlp_multitask import MLPMultitaskRegressor
-from src.models.mlp_multitask_tower import MLPMultitaskTowerRegressor
-from src.models.moe_gblup_multitask import GBLUPRoutedMoEMultitaskRegressor
 from src.models.moe_gblup_residual_multitask import GBLUPResidualHardMoEMultitaskRegressor
-from src.models.moe_contrastive_multitask import MoEContrastiveMultitaskRegressor
 from src.models.moe_gxe_multitask import MoEGxEMultitaskRegressor
-from src.models.moe_gpca_multitask import GKinshipPCAMoEMultitaskRegressor
-from src.models.moe_ldprune_multitask import MoELDPruneMultitaskRegressor
 from src.models.moe_multitask import MixtureOfExpertsMultitaskRegressor
 from src.models.moe_pls_multitask import MoEPLSMultitaskRegressor
 from src.models.moe_singletask import MixtureOfExpertsSingleTaskRegressor
 from src.models.moe_soft_multitask import SoftMoEMultitaskRegressor
-from src.models.moe_spectral_multitask import SpectralMoEGBLUPResidualMultitaskRegressor
 from src.models.xgb import XGBoostRegressor
 
 REGISTRY: dict[str, type[BaseModel]] = {
@@ -40,21 +33,14 @@ REGISTRY: dict[str, type[BaseModel]] = {
     "xgboost": XGBoostRegressor,
     "mlp": MLPRegressor,
     "mlp_multitask": MLPMultitaskRegressor,
-    "mlp_multitask_tower": MLPMultitaskTowerRegressor,
     "ensemble_multitask": EnsembleMultitaskRegressor,
     "moe_multitask": MixtureOfExpertsMultitaskRegressor,
-    "moe_gblup_multitask": GBLUPRoutedMoEMultitaskRegressor,
     "moe_gblup_residual_multitask": GBLUPResidualHardMoEMultitaskRegressor,
-    "moe_gpca_multitask": GKinshipPCAMoEMultitaskRegressor,
-    "moe_ldprune_multitask": MoELDPruneMultitaskRegressor,
     "moe_pls_multitask": MoEPLSMultitaskRegressor,
-    "moe_contrastive_multitask": MoEContrastiveMultitaskRegressor,
     "moe_gxe_multitask": MoEGxEMultitaskRegressor,
-    "moe_spectral_multitask": SpectralMoEGBLUPResidualMultitaskRegressor,
     "moe_singletask": MixtureOfExpertsSingleTaskRegressor,
     "moe_soft_multitask": SoftMoEMultitaskRegressor,
     "cbeta_vae": CBetaVAERegressor,
-    "deep_kernel_attn": DeepKernelAttentionRegressor,
 }
 
 class PreprocessedModel(BaseModel):
