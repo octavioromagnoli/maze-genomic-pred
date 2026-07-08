@@ -522,6 +522,7 @@ print(drift.to_string(index=False))
 COL = {2017: "#1b6ca8", 2018: "#e07a2f", 2019: "#2a9d5c", 2020: "#7b4ab2"}
 fig = plt.figure(figsize=(9.8, 7.6))
 ax = fig.add_subplot(111, projection="3d")
+ax.set_proj_type("ortho")  # proyeccion paralela como la figura de referencia (Lopez-Cruz)
 for y in PLOT_YEARS:
     m = years == y
     alpha = 0.58 if y in DEV_YEARS else 0.72
@@ -557,14 +558,14 @@ ax.text(center[0], lo[1], lo[2], f"PC1 ({evr[0]*100:.1f}%)",
         color="#3f5662", fontsize=9, ha="center", va="top")
 ax.text(lo[0], center[1], lo[2], f"PC2 ({evr[1]*100:.1f}%)",
         color="#5f653c", fontsize=9, ha="right", va="center")
-ax.text(lo[0], lo[1], center[2], f"PC3 ({evr[2]*100:.1f}%)",
+ax.text(hi[0], lo[1], center[2], f"PC3 ({evr[2]*100:.1f}%)",
         color="#6a4b58", fontsize=9, ha="right", va="center")
 ax.set_axis_off()
 ax.set_title("Estructura poblacional por campaña — PCA fit 2017-2019, 2020 proyectado\n"
              "rombos = centroides anuales; triangulos = 2020",
              fontsize=11, pad=12)
 ax.legend(loc="upper left", fontsize=9, framealpha=0.9, bbox_to_anchor=(0.02, 0.98))
-ax.view_init(elev=18, azim=-60)
+ax.view_init(elev=22, azim=60)
 # caja de texto con el drift AUC (separabilidad genética entre años)
 txt = "Drift (CV-AUC logística sobre 20 PCs):\n" + "\n".join(
     f"  {r['par_de_años']}:  {r['cv_auc']:.2f}" for _, r in drift.iterrows())

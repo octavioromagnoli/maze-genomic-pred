@@ -43,6 +43,8 @@ for ax, env, title in zip(axes, ("drought", "optimal"), ("GY sequía (portada)",
     ax.set_xlabel("Pearson r (val 2019)")
     ax.grid(axis="x", ls=":", alpha=0.5); ax.set_axisbelow(True)
     ax.set_xlim(0.0, 0.52)
+    # headroom arriba para que la etiqueta de la fila superior (MoE hard) no toque/salga del borde
+    ax.set_ylim(-0.5, len(order) - 0.45)
 axes[0].set_yticks(range(len(order))); axes[0].set_yticklabels(order)
 fig.tight_layout()
 fig.savefig(f"{FIG}/fig_val2019.png", bbox_inches="tight")
@@ -83,6 +85,7 @@ box = (max(0, xs.min() - pad), max(0, ys.min() - pad),
 im.crop(box).save(f"{FIG}/fig_moe_diagram.png")
 print("OK fig_moe_diagram.png crop", box)
 
-# ============ EDA drift: copiar ============
-shutil.copy(f"{FI}/fig1_eda_pca3d_matplotlib.png", f"{FIG}/fig_eda_drift.png")
-print("OK fig_eda_drift.png")
+# ============ EDA drift ============
+# fig_eda_drift.png ahora es la figura de Santi (provista externamente, convertida desde .webp);
+# NO se regenera desde el PCA matplotlib para no pisarla.
+# shutil.copy(f"{FI}/fig1_eda_pca3d_matplotlib.png", f"{FIG}/fig_eda_drift.png")
